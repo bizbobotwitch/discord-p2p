@@ -118,7 +118,7 @@
                 return fb.onSnapshot(col, (snap) => {
                     const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-                });
+                }, (err) => console.error("Firestore error:", err));
             }, [user, fb, currentServerId]);
 
             // Sync Voice Participants
@@ -160,18 +160,18 @@
                     localStorage.setItem('my-servers', JSON.stringify(newList));
                 }
 
-                // 3. CRITICAL: Initialize Server in DB if empty so Admin sees it
+                // 3. ADMIN PICKUP FIX: Initialize Server in DB if it's empty
                 try {
                     const msgCol = fb.collection(fb.db, 'artifacts', cleanId, 'public', 'data', 'messages');
                     const q = fb.query(msgCol, fb.limit(1));
                     const snapshot = await fb.getDocs(q);
                     
                     if (snapshot.empty) {
-                        // First person here! Send a hidden system ping to make it "visible"
+                        // First person here! Create a system ping so the Admin Panel detects the path
                         await fb.addDoc(msgCol, {
                             user: 'System',
                             userId: 'system',
-                            content: `Server "${cleanId}" created by ${username}`,
+                            content: `Server initialized by ${username}`,
                             timestamp: fb.serverTimestamp(),
                             isSystem: true
                         });
