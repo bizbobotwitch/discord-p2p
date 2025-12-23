@@ -30,11 +30,12 @@
         
         .chat-container { height: 100dvh; }
 
-        .voice-active {
+        .voice-active-ring {
+            box-shadow: 0 0 0 2px #23a559;
             animation: pulse-green 2s infinite;
         }
         @keyframes pulse-green {
-            0% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0.4); }
+            0% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0.7); }
             70% { box-shadow: 0 0 0 10px rgba(35, 165, 89, 0); }
             100% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0); }
         }
@@ -86,6 +87,7 @@
             const [isVoiceConnected, setIsVoiceConnected] = useState(false);
             const [voiceParticipants, setVoiceParticipants] = useState([]);
             const [isMuted, setIsMuted] = useState(false);
+            const [showCallScreen, setShowCallScreen] = useState(false);
             const localStream = useRef(null);
             const scrollRef = useRef(null);
 
@@ -118,7 +120,7 @@
                 if (!user || !fb) return;
                 const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants');
                 return fb.onSnapshot(col, (snap) => {
-                    setVoiceParticipants(snap.docs.map(d => d.data()));
+                    setVoiceParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                 });
             }, [user, fb]);
 
@@ -152,15 +154,16 @@
 
             const toggleVoice = async () => {
                 if (isVoiceConnected) {
-                    // Disconnect
+                    // Hang Up Logic
                     if (localStream.current) {
                         localStream.current.getTracks().forEach(track => track.stop());
                     }
                     const participantDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants', user.uid);
                     await fb.deleteDoc(participantDoc);
                     setIsVoiceConnected(false);
+                    setShowCallScreen(false);
                 } else {
-                    // Connect
+                    // Start Call Logic
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                         localStream.current = stream;
@@ -173,6 +176,7 @@
                         });
                         setIsVoiceConnected(true);
                         setIsMuted(false);
+                        setShowCallScreen(true);
                     } catch (err) {
                         console.error("Mic access denied", err);
                     }
@@ -220,17 +224,49 @@
             return (
                 <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden relative">
                     
+                    {/* Call Screen Overlay */}
+                    {showCallScreen && (
+                        <div className="fixed inset-0 bg-[#1e1f22] z-[60] flex flex-col scale-in">
+                            <div className="flex-1 flex flex-wrap items-center justify-center gap-8 p-10 overflow-y-auto">
+                                {voiceParticipants.map(p => (
+                                    <div key={p.uid} className="flex flex-col items-center">
+                                        <div className={`w-32 h-32 rounded-full bg-[#313338] border-4 border-[#1e1f22] flex items-center justify-center text-4xl font-bold text-white uppercase relative ${!p.isMuted ? 'voice-active-ring' : ''}`}>
+                                            {p.name[0]}
+                                            {p.isMuted && (
+                                                <div className="absolute bottom-0 right-0 bg-[#ed4245] p-2 rounded-full border-4 border-[#1e1f22]">
+                                                    <i data-lucide="mic-off" className="w-4 h-4 text-white"></i>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <span className="mt-4 font-bold text-lg text-white">{p.name} {p.uid === user.uid ? '(You)' : ''}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            {/* Call Controls Bar */}
+                            <div className="h-24 bg-[#2b2d31] flex items-center justify-center space-x-6 border-t border-white/5 shadow-2xl">
+                                <button onClick={() => setShowCallScreen(false)} className="p-4 rounded-full bg-[#4e5058] hover:bg-[#6d6f78] text-white transition-all active:scale-90" title="Minimize">
+                                    <i data-lucide="minimize-2" className="w-6 h-6"></i>
+                                </button>
+                                <button onClick={toggleMute} className={`p-4 rounded-full transition-all active:scale-90 ${isMuted ? 'bg-[#ed4245] text-white' : 'bg-[#4e5058] hover:bg-[#6d6f78] text-white'}`}>
+                                    <i data-lucide={isMuted ? "mic-off" : "mic"} className="w-6 h-6"></i>
+                                </button>
+                                <button onClick={toggleVoice} className="p-4 rounded-full bg-[#ed4245] hover:bg-[#c03537] text-white transition-all active:scale-90" title="Hang Up">
+                                    <i data-lucide="phone-off" className="w-6 h-6"></i>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {isDrawerOpen && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setIsDrawerOpen(false)}></div>}
 
+                    {/* Left Sidebar */}
                     <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#2b2d31] flex drawer-transition transform lg:relative lg:translate-x-0 lg:z-0 ${isDrawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}>
                         <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0">
                             <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center shadow-lg">
                                 <i data-lucide="message-circle" className="w-6 h-6"></i>
                             </div>
                             <div className="w-8 h-[2px] bg-white/5 rounded-full"></div>
-                            <div className="w-12 h-12 rounded-full bg-[#313338] text-[#23a559] flex items-center justify-center hover:bg-[#23a559] hover:text-white transition-all cursor-pointer">
-                                <i data-lucide="plus" className="w-6 h-6"></i>
-                            </div>
                         </div>
 
                         <div className="flex-1 flex flex-col min-w-0">
@@ -254,11 +290,10 @@
                                         <span className="text-sm">General Voice</span>
                                     </div>
                                     
-                                    {/* Voice Participants List */}
                                     <div className="mt-2 ml-4 space-y-2">
                                         {voiceParticipants.map(p => (
                                             <div key={p.uid} className="flex items-center space-x-2">
-                                                <div className={`w-6 h-6 rounded-full bg-[#5865f2] flex items-center justify-center text-[10px] font-bold text-white uppercase ${!p.isMuted && isVoiceConnected ? 'voice-active' : ''}`}>
+                                                <div className={`w-6 h-6 rounded-full bg-[#5865f2] flex items-center justify-center text-[10px] font-bold text-white uppercase ${!p.isMuted && isVoiceConnected ? 'ring-2 ring-[#23a559]' : ''}`}>
                                                     {p.name[0]}
                                                 </div>
                                                 <span className="text-xs text-[#dbdee1] font-medium truncate flex-1">{p.name}</span>
@@ -269,15 +304,15 @@
                                 </div>
                             </div>
 
-                            {/* Voice Connection Status */}
-                            {isVoiceConnected && (
-                                <div className="bg-[#232428] border-b border-[#1e1f22] p-3">
-                                    <div className="flex items-center justify-between mb-2">
+                            {/* Mini Voice Status (When connected but not in full call screen) */}
+                            {isVoiceConnected && !showCallScreen && (
+                                <div onClick={() => setShowCallScreen(true)} className="bg-[#232428] border-b border-[#1e1f22] p-3 cursor-pointer hover:bg-[#2b2d31] transition-colors">
+                                    <div className="flex items-center justify-between mb-1">
                                         <div className="flex flex-col">
                                             <span className="text-[11px] font-bold text-[#23a559] uppercase">Voice Connected</span>
-                                            <span className="text-[10px] text-[#b5bac1]">General Voice / Server</span>
+                                            <span className="text-[10px] text-[#b5bac1]">General Voice</span>
                                         </div>
-                                        <div className="flex space-x-1">
+                                        <div className="flex space-x-1" onClick={e => e.stopPropagation()}>
                                             <button onClick={toggleMute} className={`p-1.5 rounded hover:bg-white/10 ${isMuted ? 'text-red-400' : 'text-[#dbdee1]'}`}>
                                                 <i data-lucide={isMuted ? "mic-off" : "mic"} className="w-4 h-4"></i>
                                             </button>
@@ -289,7 +324,7 @@
                                 </div>
                             )}
 
-                            <div className="bg-[#232428] p-3 flex items-center space-x-3">
+                            <div className="bg-[#232428] p-3 flex items-center space-x-3 mt-auto">
                                 <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase shadow-md">{username[0]}</div>
                                 <div className="flex-1 min-w-0">
                                     <div className="text-white text-xs font-bold truncate">{username}</div>
@@ -302,6 +337,7 @@
                         </div>
                     </div>
 
+                    {/* Main Chat Area */}
                     <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
                         <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm flex-shrink-0">
                             <button onClick={() => setIsDrawerOpen(true)} className="mr-3 p-1 lg:hidden hover:bg-white/5 rounded transition-colors">
@@ -312,12 +348,6 @@
                         </div>
                         
                         <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {messages.length === 0 && (
-                                <div className="h-full flex flex-col items-center justify-center text-center opacity-40 px-6">
-                                    <i data-lucide="message-square" className="w-12 h-12 mb-4"></i>
-                                    <p className="text-sm font-medium">Welcome to the beginning of the #general channel.</p>
-                                </div>
-                            )}
                             {messages.map(m => (
                                 <div key={m.id} className="flex items-start space-x-3 group">
                                     <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase text-sm shadow-sm">{m.user ? m.user[0] : '?'}</div>
@@ -342,6 +372,7 @@
                                     value={inputText} 
                                     maxLength={500}
                                     onChange={e => setInputText(e.target.value)} 
+                                    onKeyDown={e => e.key === 'Enter' && sendMessage()}
                                 />
                                 <button onClick={sendMessage} className={`p-2 ml-2 transition-all ${inputText.trim() ? 'text-[#5865f2] scale-110' : 'text-[#b5bac1] opacity-50'}`}>
                                     <i data-lucide="send" className="w-5 h-5"></i>
