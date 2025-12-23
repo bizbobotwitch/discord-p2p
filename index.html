@@ -24,29 +24,35 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Environment variables provided by Canvas
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'discord-clone-v2';
+        // Your hardcoded Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
+            authDomain: "discord2-1ed09.firebaseapp.com",
+            projectId: "discord2-1ed09",
+            storageBucket: "discord2-1ed09.firebasestorage.app",
+            messagingSenderId: "856172729472",
+            appId: "1:856172729472:web:fa00078f5968d3e30a0265",
+            measurementId: "G-XLL488F4K0"
+        };
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Expose SDK to window
+        // Expose SDK to window with your specific settings
         window.FirebaseSDK = { 
             auth, 
             db, 
-            appId,
+            appId: "discord-clone-v2",
             collection, 
             addDoc, 
             onSnapshot, 
             serverTimestamp, 
             signInAnonymously, 
-            onAuthStateChanged,
-            signInWithCustomToken 
+            onAuthStateChanged 
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -76,15 +82,10 @@
                 
                 const initAuth = async () => {
                     try {
-                        // Priority: Custom Token (Rule 3) then Anonymous
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
-                        } else {
-                            await fb.signInAnonymously(fb.auth);
-                        }
+                        await fb.signInAnonymously(fb.auth);
                     } catch (err) {
                         console.error("Auth error:", err);
-                        setStatus('Connection Failed. Please ensure Anonymous Auth is enabled in Firebase Console.');
+                        setStatus('Connection Failed. Please ensure Anonymous Auth is enabled in Firebase.');
                     }
                 };
 
@@ -104,11 +105,10 @@
                 
                 const unsubscribe = fb.onSnapshot(messagesCol, (snapshot) => {
                     const newMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    // Sort in JS (Rule 2: No complex queries)
                     setMessages(newMessages.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
                 }, (error) => {
                     console.error("Firestore error:", error);
-                    setStatus('Database access denied. Check Firebase rules.');
+                    setStatus('Database access denied. Check your Firestore rules.');
                 });
 
                 return () => unsubscribe();
@@ -142,11 +142,6 @@
                         <div>
                             <i data-lucide="loader-2" className="w-8 h-8 animate-spin mx-auto mb-4 text-[#5865f2]"></i>
                             <p className="text-sm font-medium">{status}</p>
-                            {status.includes('Auth') && (
-                                <div className="mt-4 p-3 bg-red-900/20 text-red-400 rounded text-xs max-w-xs">
-                                    Tip: In your Firebase Console, go to Authentication > Sign-in method and enable "Anonymous".
-                                </div>
-                            )}
                         </div>
                     </div>
                 );
@@ -160,16 +155,16 @@
                                 <i data-lucide="smile" className="w-8 h-8 text-white"></i>
                             </div>
                             <h2 className="text-xl font-bold mb-2 text-white">Welcome</h2>
-                            <p className="text-xs text-[#949ba4] mb-6">Enter a safe nickname to join the chat.</p>
+                            <p className="text-xs text-[#949ba4] mb-6">Pick a name to join the chat.</p>
                             <input 
                                 value={username} 
                                 onChange={e => setUsername(e.target.value)} 
                                 onKeyDown={e => e.key === 'Enter' && saveUsername()} 
-                                placeholder="Safe Nickname"
+                                placeholder="Nickname"
                                 maxLength={15}
                                 className="w-full bg-[#1e1f22] p-2 rounded mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2]" 
                             />
-                            <button onClick={saveUsername} className="w-full bg-[#5865f2] py-2 rounded font-bold text-white hover:bg-[#4752c4]">Join Global Chat</button>
+                            <button onClick={saveUsername} className="w-full bg-[#5865f2] py-2 rounded font-bold text-white hover:bg-[#4752c4]">Join Chat</button>
                         </div>
                     </div>
                 );
@@ -180,7 +175,7 @@
                     {/* Servers Sidebar */}
                     <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
                         <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center cursor-pointer transition-all">
-                            <i data-lucide="globe" className="w-6 h-6"></i>
+                            <i data-lucide="message-square" className="w-6 h-6"></i>
                         </div>
                     </div>
 
@@ -220,12 +215,12 @@
                                     <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
                                     <div className="min-w-0">
                                         <div className="flex items-baseline space-x-2">
-                                            <span className="font-bold text-white text-sm hover:underline cursor-pointer">{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">
+                                            <span className="font-bold text-white text-[15px]">{m.user}</span>
+                                            <span className="text-[11px] text-[#949ba4]">
                                                 {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
                                             </span>
                                         </div>
-                                        <p className="text-sm text-[#dbdee1] break-words">{m.content}</p>
+                                        <p className="text-[15px] text-[#dbdee1] break-words">{m.content}</p>
                                     </div>
                                 </div>
                             ))}
