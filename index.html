@@ -47,7 +47,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
@@ -65,7 +65,7 @@
         window.FirebaseSDK = { 
             auth, db, defaultAppId: "discord-clone-v2",
             collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where
+            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where, getDocs, limit
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -143,23 +143,45 @@
                 }
             };
 
-            const joinServer = (id) => {
+            const joinServer = async (id) => {
                 const cleanId = id.trim().toLowerCase().replace(/\s+/g, '-');
-                if (cleanId) {
-                    if (isVoiceConnected) toggleVoice();
-                    setCurrentServerId(cleanId);
-                    localStorage.setItem('chat-server-id', cleanId);
-                    
-                    // Add to "My Servers" list if not already there
-                    if (!myServers.includes(cleanId)) {
-                        const newList = [cleanId, ...myServers].slice(0, 10);
-                        setMyServers(newList);
-                        localStorage.setItem('my-servers', JSON.stringify(newList));
-                    }
-                    
-                    setShowServerModal(false);
-                    setNewServerInput('');
+                if (!cleanId || !fb || !user) return;
+
+                if (isVoiceConnected) toggleVoice();
+                
+                // 1. Set Local State
+                setCurrentServerId(cleanId);
+                localStorage.setItem('chat-server-id', cleanId);
+                
+                // 2. Manage Sidebar List
+                if (!myServers.includes(cleanId)) {
+                    const newList = [cleanId, ...myServers].slice(0, 10);
+                    setMyServers(newList);
+                    localStorage.setItem('my-servers', JSON.stringify(newList));
                 }
+
+                // 3. CRITICAL: Initialize Server in DB if empty so Admin sees it
+                try {
+                    const msgCol = fb.collection(fb.db, 'artifacts', cleanId, 'public', 'data', 'messages');
+                    const q = fb.query(msgCol, fb.limit(1));
+                    const snapshot = await fb.getDocs(q);
+                    
+                    if (snapshot.empty) {
+                        // First person here! Send a hidden system ping to make it "visible"
+                        await fb.addDoc(msgCol, {
+                            user: 'System',
+                            userId: 'system',
+                            content: `Server "${cleanId}" created by ${username}`,
+                            timestamp: fb.serverTimestamp(),
+                            isSystem: true
+                        });
+                    }
+                } catch (e) {
+                    console.error("Initialization check failed:", e);
+                }
+                
+                setShowServerModal(false);
+                setNewServerInput('');
             };
 
             const sendMessage = async () => {
@@ -408,8 +430,10 @@
                                 </div>
                             )}
                             {messages.map(m => (
-                                <div key={m.id} className="flex items-start space-x-3">
-                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
+                                <div key={m.id} className={`flex items-start space-x-3 ${m.isSystem ? 'opacity-40 italic' : ''}`}>
+                                    {!m.isSystem && (
+                                        <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
+                                    )}
                                     <div className="min-w-0">
                                         <div className="flex items-baseline space-x-2">
                                             <span className="font-bold text-white text-[15px]">{m.user}</span>
@@ -417,7 +441,7 @@
                                                 {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
                                             </span>
                                         </div>
-                                        <p className="text-[15px] text-[#dbdee1] break-words">{m.content}</p>
+                                        <p className={`text-[15px] text-[#dbdee1] break-words ${m.isSystem ? 'text-xs' : ''}`}>{m.content}</p>
                                     </div>
                                 </div>
                             ))}
