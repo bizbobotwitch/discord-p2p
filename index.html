@@ -11,12 +11,33 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #313338; margin: 0; color: #dbdee1; overflow: hidden; touch-action: manipulation; }
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #313338; 
+            margin: 0; 
+            color: #dbdee1; 
+            overflow: hidden;
+            touch-action: manipulation;
+        }
         .scale-in { animation: scaleIn 0.2s ease-out; }
         @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        
+        .drawer-transition { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        
         ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #1e1f22; border-radius: 4px; }
+        
         .chat-container { height: 100dvh; }
+
+        .voice-active {
+            animation: pulse-green 2s infinite;
+        }
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(35, 165, 89, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0); }
+        }
     </style>
 </head>
 <body>
@@ -24,10 +45,10 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, query, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+        const firebaseConfig = {
             apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
             authDomain: "discord2-1ed09.firebaseapp.com",
             projectId: "discord2-1ed09",
@@ -41,9 +62,9 @@
         const db = getFirestore(app);
 
         window.FirebaseSDK = { 
-            auth, db, appId: typeof __app_id !== 'undefined' ? __app_id : "discord-clone-v2",
+            auth, db, appId: "discord-clone-v2",
             collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, signInWithCustomToken, onAuthStateChanged, doc, setDoc, query, updateDoc, arrayUnion
+            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -54,101 +75,74 @@
         const App = () => {
             const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
-            const [profile, setProfile] = useState(null);
-            const [connectionError, setConnectionError] = useState(false);
-            
-            const [currentServer, setCurrentServer] = useState('global'); 
-            const [activeChannel, setActiveChannel] = useState('general');
-            const [showCreateModal, setShowCreateModal] = useState(false);
-            const [servers, setServers] = useState([]);
+            const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
+            const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
             const [messages, setMessages] = useState([]);
             const [inputText, setInputText] = useState('');
-            const [newServerName, setNewServerName] = useState('');
-            const [tempName, setTempName] = useState('');
+            const [status, setStatus] = useState('Connecting...');
+            const [isDrawerOpen, setIsDrawerOpen] = useState(false);
             
+            // Voice State
+            const [isVoiceConnected, setIsVoiceConnected] = useState(false);
+            const [voiceParticipants, setVoiceParticipants] = useState([]);
+            const [isMuted, setIsMuted] = useState(false);
+            const localStream = useRef(null);
             const scrollRef = useRef(null);
-
-            const startAuth = async () => {
-                if (!fb) return;
-                try {
-                    setConnectionError(false);
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
-                    } else {
-                        await fb.signInAnonymously(fb.auth);
-                    }
-                } catch (err) {
-                    console.error("Auth error:", err);
-                    setConnectionError(true);
-                }
-            };
 
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
                 if (!fb) window.addEventListener('firebase-ready', handleReady);
-                else startAuth();
                 return () => window.removeEventListener('firebase-ready', handleReady);
             }, [fb]);
 
             useEffect(() => {
                 if (!fb) return;
-                return fb.onAuthStateChanged(fb.auth, async (u) => {
+                fb.signInAnonymously(fb.auth).catch(() => setStatus('Auth Failed'));
+                return fb.onAuthStateChanged(fb.auth, (u) => {
                     setUser(u);
-                    if (u) {
-                        const profileDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'users', u.uid, 'profile', 'info');
-                        await fb.setDoc(profileDoc, { uid: u.uid, lastSeen: fb.serverTimestamp() }, { merge: true });
-                        fb.onSnapshot(profileDoc, (snap) => setProfile(snap.data()), (err) => setConnectionError(true));
-                    }
+                    if (u) setStatus('Connected');
                 });
             }, [fb]);
 
             useEffect(() => {
                 if (!user || !fb) return;
-                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'servers');
-                return fb.onSnapshot(col, (snap) => {
-                    setServers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                }, (err) => console.log("Server fetch error (likely empty)"));
-            }, [user, fb]);
-
-            useEffect(() => {
-                if (!user || !fb) return;
-                const path = currentServer === 'global' ? 'global' : currentServer;
-                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', `msg_${path}_${activeChannel}`);
-                
+                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'messages');
                 return fb.onSnapshot(col, (snap) => {
                     const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-                }, (err) => setMessages([]));
-            }, [user, fb, currentServer, activeChannel]);
+                });
+            }, [user, fb]);
+
+            // Sync Voice Participants
+            useEffect(() => {
+                if (!user || !fb) return;
+                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants');
+                return fb.onSnapshot(col, (snap) => {
+                    setVoiceParticipants(snap.docs.map(d => d.data()));
+                });
+            }, [user, fb]);
 
             useEffect(() => {
-                if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                if (scrollRef.current) {
+                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                }
             }, [messages]);
 
-            const handleCreateServer = async () => {
-                if (!newServerName.trim()) return;
-                try {
-                    const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'servers');
-                    await fb.addDoc(col, {
-                        name: newServerName.trim(),
-                        ownerId: user.uid,
-                        ownerName: profile?.username || 'User',
-                        createdAt: fb.serverTimestamp()
-                    });
-                    setNewServerName('');
-                    setShowCreateModal(false);
-                } catch (e) { console.error(e); }
+            const saveUsername = () => {
+                if (username.trim()) {
+                    localStorage.setItem('chat-username', username.trim());
+                    setIsUsernameSet(true);
+                }
             };
 
             const sendMessage = async () => {
                 if (!inputText.trim() || !user || !fb) return;
                 const text = inputText.trim();
-                const path = currentServer === 'global' ? 'global' : currentServer;
                 setInputText('');
                 try {
-                    const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', `msg_${path}_${activeChannel}`);
+                    const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'messages');
                     await fb.addDoc(col, {
-                        user: profile?.username || 'Anonymous',
+                        user: username,
                         userId: user.uid,
                         content: text,
                         timestamp: fb.serverTimestamp()
@@ -156,179 +150,212 @@
                 } catch (err) { console.error(err); }
             };
 
-            const handleUsernameSubmit = async () => {
-                if (tempName.trim()){
+            const toggleVoice = async () => {
+                if (isVoiceConnected) {
+                    // Disconnect
+                    if (localStream.current) {
+                        localStream.current.getTracks().forEach(track => track.stop());
+                    }
+                    const participantDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants', user.uid);
+                    await fb.deleteDoc(participantDoc);
+                    setIsVoiceConnected(false);
+                } else {
+                    // Connect
                     try {
-                        await fb.updateDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'profile', 'info'), {
-                            username: tempName.trim()
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        localStream.current = stream;
+                        const participantDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants', user.uid);
+                        await fb.setDoc(participantDoc, {
+                            uid: user.uid,
+                            name: username,
+                            isMuted: false,
+                            joinedAt: Date.now()
                         });
-                    } catch (err) { console.error(err); }
+                        setIsVoiceConnected(true);
+                        setIsMuted(false);
+                    } catch (err) {
+                        console.error("Mic access denied", err);
+                    }
                 }
             };
 
-            // Loading / Connection View
+            const toggleMute = () => {
+                if (localStream.current) {
+                    const newValue = !isMuted;
+                    localStream.current.getAudioTracks()[0].enabled = !newValue;
+                    setIsMuted(newValue);
+                    const participantDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'voice_participants', user.uid);
+                    fb.setDoc(participantDoc, { isMuted: newValue }, { merge: true });
+                }
+            };
+
             if (!user) return (
-                <div className="h-screen w-full bg-[#1e1f22] flex flex-col items-center justify-center p-6 text-white text-center">
-                    <div className="w-16 h-16 border-4 border-[#5865f2] border-t-transparent rounded-full animate-spin mb-6"></div>
-                    <h2 className="text-xl font-bold mb-2">Connecting to Cloud Chat</h2>
-                    <p className="text-[#949ba4] text-sm max-w-xs mb-8">Linking your secure session to the private database...</p>
-                    {connectionError && (
-                        <button 
-                            onClick={startAuth}
-                            className="bg-[#5865f2] px-6 py-2 rounded-lg font-bold hover:bg-[#4752c4] transition-colors"
-                        >
-                            Try Again
-                        </button>
-                    )}
+                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22]">
+                    <div className="text-center">
+                        <div className="w-12 h-12 border-4 border-[#5865f2] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <p className="text-sm font-medium">{status}</p>
+                    </div>
                 </div>
             );
 
-            // Setup Profile View
-            if (!profile?.username) return (
-                <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-white">
-                    <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center scale-in shadow-2xl border border-white/5">
-                        <div className="w-20 h-20 bg-[#5865f2] rounded-3xl flex items-center justify-center mx-auto mb-6">
-                            <i data-lucide="user-plus" className="w-10 h-10 text-white"></i>
+            if (!isUsernameSet) return (
+                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] p-6">
+                    <div className="bg-[#313338] p-6 rounded-2xl shadow-xl w-full max-w-sm text-center scale-in border border-white/5">
+                        <div className="w-16 h-16 bg-[#5865f2] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+                            <i data-lucide="smile" className="w-8 h-8 text-white"></i>
                         </div>
-                        <h1 className="text-2xl font-bold mb-2 text-white">Cloud Chat</h1>
-                        <p className="text-sm text-[#949ba4] mb-6">Connected! What should we call you?</p>
+                        <h2 className="text-xl font-bold mb-2 text-white">Choose a Name</h2>
+                        <p className="text-xs text-[#949ba4] mb-6">Pick a nickname to start chatting.</p>
                         <input 
-                            className="w-full bg-[#1e1f22] p-4 rounded-xl mb-4 text-center outline-none border border-white/10 focus:border-[#5865f2] text-white" 
-                            placeholder="Display Name" 
-                            maxLength={15}
-                            value={tempName}
-                            onChange={(e) => setTempName(e.target.value)}
+                            value={username} 
+                            onChange={e => setUsername(e.target.value)} 
+                            placeholder="Your nickname..."
+                            className="w-full bg-[#1e1f22] p-3 rounded-xl mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2] text-center" 
                         />
-                        <button 
-                            onClick={handleUsernameSubmit}
-                            disabled={!tempName.trim()}
-                            className="w-full bg-[#5865f2] hover:bg-[#4752c4] disabled:opacity-50 py-4 rounded-xl font-bold text-white transition-all shadow-lg active:scale-95"
-                        >
-                            Start Chatting
-                        </button>
+                        <button onClick={saveUsername} className="w-full bg-[#5865f2] py-3 rounded-xl font-bold text-white active:scale-95 transition-transform">Join Chat</button>
                     </div>
                 </div>
             );
 
-            // Main App View
             return (
-                <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden">
-                    {/* Servers Sidebar */}
-                    <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0">
-                        <div 
-                            onClick={() => setCurrentServer('global')}
-                            className={`w-12 h-12 rounded-[16px] flex items-center justify-center transition-all cursor-pointer ${currentServer === 'global' ? 'bg-[#5865f2] text-white rounded-[12px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white hover:rounded-[12px]'}`}
-                        >
-                            <i data-lucide="globe" className="w-6 h-6"></i>
-                        </div>
-                        <div className="w-8 h-[2px] bg-white/5 rounded-full"></div>
-                        {servers.map(s => (
-                            <div 
-                                key={s.id}
-                                onClick={() => setCurrentServer(s.id)}
-                                title={s.name}
-                                className={`w-12 h-12 rounded-[24px] flex items-center justify-center transition-all cursor-pointer font-bold uppercase text-xs text-center px-1 overflow-hidden leading-tight ${currentServer === s.id ? 'bg-[#5865f2] text-white rounded-[12px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white hover:rounded-[12px]'}`}
-                            >
-                                {s.name.substring(0, 3)}
-                            </div>
-                        ))}
-                        <div 
-                            onClick={() => setShowCreateModal(true)}
-                            className="w-12 h-12 rounded-[24px] bg-[#313338] text-[#23a559] flex items-center justify-center hover:bg-[#23a559] hover:text-white hover:rounded-[12px] transition-all cursor-pointer"
-                        >
-                            <i data-lucide="plus" className="w-6 h-6"></i>
-                        </div>
-                    </div>
+                <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden relative">
+                    
+                    {isDrawerOpen && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setIsDrawerOpen(false)}></div>}
 
-                    {/* Channels Sidebar */}
-                    <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 hidden lg:flex">
-                        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm truncate">
-                            {currentServer === 'global' ? 'Global Space' : (servers.find(s => s.id === currentServer)?.name || 'Server')}
-                        </div>
-                        <div className="flex-1 p-3 space-y-4">
-                            <div>
-                                <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Channels</div>
-                                <div className={`flex items-center px-2 py-1.5 rounded-md bg-[#3f4147] text-white`}>
-                                    <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
-                                    <span className="font-medium text-sm">general</span>
-                                </div>
+                    <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#2b2d31] flex drawer-transition transform lg:relative lg:translate-x-0 lg:z-0 ${isDrawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}>
+                        <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0">
+                            <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center shadow-lg">
+                                <i data-lucide="message-circle" className="w-6 h-6"></i>
+                            </div>
+                            <div className="w-8 h-[2px] bg-white/5 rounded-full"></div>
+                            <div className="w-12 h-12 rounded-full bg-[#313338] text-[#23a559] flex items-center justify-center hover:bg-[#23a559] hover:text-white transition-all cursor-pointer">
+                                <i data-lucide="plus" className="w-6 h-6"></i>
                             </div>
                         </div>
-                        <div className="bg-[#232428] p-3">
-                            <div className="flex items-center space-x-2">
-                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase text-white shadow-md">{profile.username[0]}</div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-white text-xs font-bold truncate">{profile.username}</div>
-                                    <div className="text-[10px] text-[#949ba4] truncate">ID: {user.uid.slice(0, 5)}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    {/* Chat Area */}
-                    <div className="flex-1 flex flex-col min-w-0 bg-[#313338]">
-                        <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm">
-                            <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
-                            <span className="font-bold text-white text-sm">{activeChannel}</span>
-                        </div>
-                        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {messages.map(m => (
-                                <div key={m.id} className="flex items-start space-x-3">
-                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase text-sm shadow-md">{m.user ? m.user[0] : '?'}</div>
-                                    <div className="min-w-0">
-                                        <div className="flex items-baseline space-x-2">
-                                            <span className={`font-bold text-[15px] ${m.userId === user.uid ? 'text-indigo-300' : 'text-white'}`}>{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">
-                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
-                                            </span>
-                                        </div>
-                                        <p className="text-[15px] text-[#dbdee1] break-words">{m.content}</p>
+                        <div className="flex-1 flex flex-col min-w-0">
+                            <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm">Public Server</div>
+                            <div className="flex-1 p-3 space-y-4 overflow-y-auto">
+                                <div>
+                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Text Channels</div>
+                                    <div className="bg-[#3f4147] text-white flex items-center px-3 py-2 rounded-md cursor-pointer">
+                                        <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
+                                        <span className="font-medium text-sm">general</span>
                                     </div>
                                 </div>
-                            ))}
-                        </div>
-                        <div className="px-4 pb-6 pt-2">
-                            <div className="bg-[#383a40] rounded-xl px-4 py-2 flex items-center border border-white/5">
-                                <input 
-                                    className="flex-1 bg-transparent outline-none text-[15px] text-[#dbdee1] placeholder-[#949ba4] py-1" 
-                                    placeholder={`Message #${activeChannel}`} 
-                                    value={inputText} 
-                                    onChange={e => setInputText(e.target.value)} 
-                                />
-                                <button onClick={sendMessage} disabled={!inputText.trim()} className={`p-2 ml-2 transition-all ${inputText.trim() ? 'text-[#5865f2]' : 'text-[#b5bac1] opacity-50'}`}>
-                                    <i data-lucide="send" className="w-5 h-5"></i>
+
+                                <div>
+                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Voice Channels</div>
+                                    <div 
+                                        onClick={toggleVoice}
+                                        className={`flex items-center px-3 py-2 rounded-md cursor-pointer transition-colors ${isVoiceConnected ? 'bg-[#3f4147] text-white font-bold' : 'text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]'}`}
+                                    >
+                                        <i data-lucide="volume-2" className="w-4 h-4 mr-2 opacity-50"></i>
+                                        <span className="text-sm">General Voice</span>
+                                    </div>
+                                    
+                                    {/* Voice Participants List */}
+                                    <div className="mt-2 ml-4 space-y-2">
+                                        {voiceParticipants.map(p => (
+                                            <div key={p.uid} className="flex items-center space-x-2">
+                                                <div className={`w-6 h-6 rounded-full bg-[#5865f2] flex items-center justify-center text-[10px] font-bold text-white uppercase ${!p.isMuted && isVoiceConnected ? 'voice-active' : ''}`}>
+                                                    {p.name[0]}
+                                                </div>
+                                                <span className="text-xs text-[#dbdee1] font-medium truncate flex-1">{p.name}</span>
+                                                {p.isMuted && <i data-lucide="mic-off" className="w-3 h-3 text-red-400"></i>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Voice Connection Status */}
+                            {isVoiceConnected && (
+                                <div className="bg-[#232428] border-b border-[#1e1f22] p-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex flex-col">
+                                            <span className="text-[11px] font-bold text-[#23a559] uppercase">Voice Connected</span>
+                                            <span className="text-[10px] text-[#b5bac1]">General Voice / Server</span>
+                                        </div>
+                                        <div className="flex space-x-1">
+                                            <button onClick={toggleMute} className={`p-1.5 rounded hover:bg-white/10 ${isMuted ? 'text-red-400' : 'text-[#dbdee1]'}`}>
+                                                <i data-lucide={isMuted ? "mic-off" : "mic"} className="w-4 h-4"></i>
+                                            </button>
+                                            <button onClick={toggleVoice} className="p-1.5 rounded hover:bg-red-500/20 text-red-400">
+                                                <i data-lucide="phone-off" className="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="bg-[#232428] p-3 flex items-center space-x-3">
+                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase shadow-md">{username[0]}</div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-white text-xs font-bold truncate">{username}</div>
+                                    <div className="text-[10px] text-[#23a559] font-bold">Online</div>
+                                </div>
+                                <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+                                    <i data-lucide="log-out" className="w-4 h-4 text-[#b5bac1]"></i>
                                 </button>
                             </div>
                         </div>
                     </div>
 
-                    {/* Create Server Modal */}
-                    {showCreateModal && (
-                        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-white text-center">
-                            <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm border border-white/5 scale-in shadow-2xl">
-                                <h2 className="text-2xl font-bold mb-2">Create Server</h2>
-                                <p className="text-sm text-[#949ba4] mb-6">Give your new server a name.</p>
-                                <input 
-                                    className="w-full bg-[#1e1f22] p-4 rounded-xl mb-6 outline-none border border-white/10 focus:border-[#5865f2] text-white" 
-                                    placeholder="Server Name" 
-                                    value={newServerName}
-                                    onChange={e => setNewServerName(e.target.value)}
-                                    maxLength={20}
-                                />
-                                <div className="flex space-x-3">
-                                    <button onClick={() => setShowCreateModal(false)} className="flex-1 py-3 text-sm font-bold text-[#dbdee1]">Cancel</button>
-                                    <button onClick={handleCreateServer} disabled={!newServerName.trim()} className="flex-1 bg-[#5865f2] py-3 rounded-xl font-bold text-white shadow-lg active:scale-95 disabled:opacity-50">Create</button>
+                    <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
+                        <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm flex-shrink-0">
+                            <button onClick={() => setIsDrawerOpen(true)} className="mr-3 p-1 lg:hidden hover:bg-white/5 rounded transition-colors">
+                                <i data-lucide="menu" className="w-6 h-6"></i>
+                            </button>
+                            <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
+                            <span className="font-bold text-white text-sm">general</span>
+                        </div>
+                        
+                        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+                            {messages.length === 0 && (
+                                <div className="h-full flex flex-col items-center justify-center text-center opacity-40 px-6">
+                                    <i data-lucide="message-square" className="w-12 h-12 mb-4"></i>
+                                    <p className="text-sm font-medium">Welcome to the beginning of the #general channel.</p>
                                 </div>
+                            )}
+                            {messages.map(m => (
+                                <div key={m.id} className="flex items-start space-x-3 group">
+                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase text-sm shadow-sm">{m.user ? m.user[0] : '?'}</div>
+                                    <div className="min-w-0">
+                                        <div className="flex items-baseline space-x-2">
+                                            <span className="font-bold text-white text-[15px]">{m.user}</span>
+                                            <span className="text-[10px] text-[#949ba4]">
+                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
+                                            </span>
+                                        </div>
+                                        <p className="text-[15px] text-[#dbdee1] break-words leading-snug">{m.content}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="px-4 pb-6 lg:pb-8 pt-2">
+                            <div className="bg-[#383a40] rounded-xl px-4 py-1 flex items-center shadow-lg border border-white/5 min-h-[44px]">
+                                <input 
+                                    className="flex-1 bg-transparent outline-none text-[15px] text-[#dbdee1] placeholder-[#949ba4] py-2" 
+                                    placeholder="Message #general" 
+                                    value={inputText} 
+                                    maxLength={500}
+                                    onChange={e => setInputText(e.target.value)} 
+                                />
+                                <button onClick={sendMessage} className={`p-2 ml-2 transition-all ${inputText.trim() ? 'text-[#5865f2] scale-110' : 'text-[#b5bac1] opacity-50'}`}>
+                                    <i data-lucide="send" className="w-5 h-5"></i>
+                                </button>
                             </div>
                         </div>
-                    )}
+                    </div>
                 </div>
             );
         };
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-        setInterval(() => window.lucide && window.lucide.createIcons(), 1000);
+        setInterval(() => window.lucide && window.lucide.createIcons(), 500);
     </script>
 </body>
 </html>
