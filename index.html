@@ -24,7 +24,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, query, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
@@ -43,7 +43,7 @@
         window.FirebaseSDK = { 
             auth, db, appId: typeof __app_id !== 'undefined' ? __app_id : "discord-clone-v2",
             collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, query, updateDoc, arrayUnion
+            signInAnonymously, signInWithCustomToken, onAuthStateChanged, doc, setDoc, query, updateDoc, arrayUnion
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -55,6 +55,8 @@
             const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null);
+            const [connectionError, setConnectionError] = useState(false);
+            
             const [currentServer, setCurrentServer] = useState('global'); 
             const [activeChannel, setActiveChannel] = useState('general');
             const [showCreateModal, setShowCreateModal] = useState(false);
@@ -66,21 +68,36 @@
             
             const scrollRef = useRef(null);
 
+            const startAuth = async () => {
+                if (!fb) return;
+                try {
+                    setConnectionError(false);
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
+                    } else {
+                        await fb.signInAnonymously(fb.auth);
+                    }
+                } catch (err) {
+                    console.error("Auth error:", err);
+                    setConnectionError(true);
+                }
+            };
+
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
                 if (!fb) window.addEventListener('firebase-ready', handleReady);
+                else startAuth();
                 return () => window.removeEventListener('firebase-ready', handleReady);
             }, [fb]);
 
             useEffect(() => {
                 if (!fb) return;
-                fb.signInAnonymously(fb.auth);
                 return fb.onAuthStateChanged(fb.auth, async (u) => {
                     setUser(u);
                     if (u) {
                         const profileDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'users', u.uid, 'profile', 'info');
                         await fb.setDoc(profileDoc, { uid: u.uid, lastSeen: fb.serverTimestamp() }, { merge: true });
-                        fb.onSnapshot(profileDoc, (snap) => setProfile(snap.data()));
+                        fb.onSnapshot(profileDoc, (snap) => setProfile(snap.data()), (err) => setConnectionError(true));
                     }
                 });
             }, [fb]);
@@ -90,7 +107,7 @@
                 const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'servers');
                 return fb.onSnapshot(col, (snap) => {
                     setServers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                });
+                }, (err) => console.log("Server fetch error (likely empty)"));
             }, [user, fb]);
 
             useEffect(() => {
@@ -149,8 +166,24 @@
                 }
             };
 
-            if (!user) return <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center font-bold text-white">Connecting...</div>;
+            // Loading / Connection View
+            if (!user) return (
+                <div className="h-screen w-full bg-[#1e1f22] flex flex-col items-center justify-center p-6 text-white text-center">
+                    <div className="w-16 h-16 border-4 border-[#5865f2] border-t-transparent rounded-full animate-spin mb-6"></div>
+                    <h2 className="text-xl font-bold mb-2">Connecting to Cloud Chat</h2>
+                    <p className="text-[#949ba4] text-sm max-w-xs mb-8">Linking your secure session to the private database...</p>
+                    {connectionError && (
+                        <button 
+                            onClick={startAuth}
+                            className="bg-[#5865f2] px-6 py-2 rounded-lg font-bold hover:bg-[#4752c4] transition-colors"
+                        >
+                            Try Again
+                        </button>
+                    )}
+                </div>
+            );
 
+            // Setup Profile View
             if (!profile?.username) return (
                 <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-white">
                     <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center scale-in shadow-2xl border border-white/5">
@@ -158,10 +191,10 @@
                             <i data-lucide="user-plus" className="w-10 h-10 text-white"></i>
                         </div>
                         <h1 className="text-2xl font-bold mb-2 text-white">Cloud Chat</h1>
-                        <p className="text-sm text-[#949ba4] mb-6">Enter a display name to join the community.</p>
+                        <p className="text-sm text-[#949ba4] mb-6">Connected! What should we call you?</p>
                         <input 
                             className="w-full bg-[#1e1f22] p-4 rounded-xl mb-4 text-center outline-none border border-white/10 focus:border-[#5865f2] text-white" 
-                            placeholder="Nickname" 
+                            placeholder="Display Name" 
                             maxLength={15}
                             value={tempName}
                             onChange={(e) => setTempName(e.target.value)}
@@ -171,12 +204,13 @@
                             disabled={!tempName.trim()}
                             className="w-full bg-[#5865f2] hover:bg-[#4752c4] disabled:opacity-50 py-4 rounded-xl font-bold text-white transition-all shadow-lg active:scale-95"
                         >
-                            Join Chat
+                            Start Chatting
                         </button>
                     </div>
                 </div>
             );
 
+            // Main App View
             return (
                 <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden">
                     {/* Servers Sidebar */}
@@ -225,7 +259,7 @@
                                 <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase text-white shadow-md">{profile.username[0]}</div>
                                 <div className="flex-1 min-w-0">
                                     <div className="text-white text-xs font-bold truncate">{profile.username}</div>
-                                    <div className="text-[10px] text-[#949ba4] truncate">Online</div>
+                                    <div className="text-[10px] text-[#949ba4] truncate">ID: {user.uid.slice(0, 5)}</div>
                                 </div>
                             </div>
                         </div>
@@ -270,8 +304,8 @@
 
                     {/* Create Server Modal */}
                     {showCreateModal && (
-                        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-white">
-                            <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center border border-white/5 scale-in shadow-2xl">
+                        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-white text-center">
+                            <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm border border-white/5 scale-in shadow-2xl">
                                 <h2 className="text-2xl font-bold mb-2">Create Server</h2>
                                 <p className="text-sm text-[#949ba4] mb-6">Give your new server a name.</p>
                                 <input 
