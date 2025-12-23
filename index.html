@@ -24,25 +24,30 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Your specific Firebase configuration
-        const firebaseConfig = {
-            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
-            authDomain: "discord2-1ed09.firebaseapp.com",
-            projectId: "discord2-1ed09",
-            storageBucket: "discord2-1ed09.firebasestorage.app",
-            messagingSenderId: "856172729472",
-            appId: "1:856172729472:web:fa00078f5968d3e30a0265",
-            measurementId: "G-XLL488F4K0"
-        };
+        // Environment variables provided by Canvas
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'discord-clone-v2';
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        window.FirebaseSDK = { auth, db, collection, addDoc, onSnapshot, serverTimestamp, signInAnonymously, onAuthStateChanged };
+        // Expose SDK to window
+        window.FirebaseSDK = { 
+            auth, 
+            db, 
+            appId,
+            collection, 
+            addDoc, 
+            onSnapshot, 
+            serverTimestamp, 
+            signInAnonymously, 
+            onAuthStateChanged,
+            signInWithCustomToken 
+        };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -60,8 +65,10 @@
 
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
-                if (!fb) window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
+                if (!fb) {
+                    window.addEventListener('firebase-ready', handleReady);
+                    return () => window.removeEventListener('firebase-ready', handleReady);
+                }
             }, [fb]);
 
             useEffect(() => {
@@ -69,10 +76,15 @@
                 
                 const initAuth = async () => {
                     try {
-                        await fb.signInAnonymously(fb.auth);
+                        // Priority: Custom Token (Rule 3) then Anonymous
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
+                        } else {
+                            await fb.signInAnonymously(fb.auth);
+                        }
                     } catch (err) {
                         console.error("Auth error:", err);
-                        setStatus('Connection Failed. Check internet.');
+                        setStatus('Connection Failed. Please ensure Anonymous Auth is enabled in Firebase Console.');
                     }
                 };
 
@@ -87,13 +99,17 @@
             useEffect(() => {
                 if (!user || !fb) return;
 
-                const appId = 'discord-clone-v2';
-                const messagesCol = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', 'messages');
+                // Path Rule 1: /artifacts/{appId}/public/data/{collectionName}
+                const messagesCol = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'messages');
                 
                 const unsubscribe = fb.onSnapshot(messagesCol, (snapshot) => {
                     const newMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Sort in JS (Rule 2: No complex queries)
                     setMessages(newMessages.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
-                }, (error) => console.error("Firestore error:", error));
+                }, (error) => {
+                    console.error("Firestore error:", error);
+                    setStatus('Database access denied. Check Firebase rules.');
+                });
 
                 return () => unsubscribe();
             }, [user, fb]);
@@ -110,8 +126,7 @@
                 const text = inputText.trim();
                 setInputText('');
                 try {
-                    const appId = 'discord-clone-v2';
-                    const messagesCol = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', 'messages');
+                    const messagesCol = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'messages');
                     await fb.addDoc(messagesCol, {
                         user: username,
                         userId: user.uid,
@@ -123,10 +138,15 @@
 
             if (!user) {
                 return (
-                    <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] text-[#dbdee1]">
-                        <div className="text-center">
+                    <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] text-[#dbdee1] p-6 text-center">
+                        <div>
                             <i data-lucide="loader-2" className="w-8 h-8 animate-spin mx-auto mb-4 text-[#5865f2]"></i>
                             <p className="text-sm font-medium">{status}</p>
+                            {status.includes('Auth') && (
+                                <div className="mt-4 p-3 bg-red-900/20 text-red-400 rounded text-xs max-w-xs">
+                                    Tip: In your Firebase Console, go to Authentication > Sign-in method and enable "Anonymous".
+                                </div>
+                            )}
                         </div>
                     </div>
                 );
