@@ -22,21 +22,28 @@
 <body>
     <div id="root"></div>
 
+    <!-- Load Firebase as standard scripts to avoid module conflicts with Babel -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Expose Firebase to the React app
+        window.FirebaseSDK = {
+            initializeApp, getAuth, signInAnonymously, onAuthStateChanged, 
+            signInWithCustomToken, getFirestore, collection, addDoc, 
+            query, onSnapshot, serverTimestamp
+        };
+        
+        // Signal that Firebase is ready
+        window.dispatchEvent(new Event('firebase-ready'));
+    </script>
+
+    <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // Firebase Configuration
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-chat-app';
-
         const App = () => {
+            const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
             const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
             const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
@@ -44,43 +51,60 @@
             const [inputText, setInputText] = useState('');
             const [isConnecting, setIsConnecting] = useState(true);
 
+            // Wait for Firebase to be globally available
+            useEffect(() => {
+                const handleReady = () => setFb(window.FirebaseSDK);
+                if (!fb) {
+                    window.addEventListener('firebase-ready', handleReady);
+                    return () => window.removeEventListener('firebase-ready', handleReady);
+                }
+            }, [fb]);
+
             // Handle Authentication
             useEffect(() => {
+                if (!fb) return;
+                
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = fb.initializeApp(firebaseConfig);
+                const auth = fb.getAuth(app);
+                const db = fb.getFirestore(app);
+                window.dbInstance = db; // Store for messaging
+
                 const initAuth = async () => {
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
+                            await fb.signInWithCustomToken(auth, __initial_auth_token);
                         } else {
-                            await signInAnonymously(auth);
+                            await fb.signInAnonymously(auth);
                         }
                     } catch (err) {
                         console.error("Auth error:", err);
                     }
                 };
+
                 initAuth();
-                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                const unsubscribe = fb.onAuthStateChanged(auth, (currentUser) => {
                     setUser(currentUser);
                     setIsConnecting(false);
                 });
                 return () => unsubscribe();
-            }, []);
+            }, [fb]);
 
             // Handle Real-time Messages
             useEffect(() => {
-                if (!user) return;
+                if (!user || !fb || !window.dbInstance) return;
 
-                // Path for public global chat
-                const messagesCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-chat-app';
+                const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
                 
-                // Set up listener
-                const unsubscribe = onSnapshot(
+                const unsubscribe = fb.onSnapshot(
                     messagesCol, 
                     (snapshot) => {
                         const newMessages = snapshot.docs.map(doc => ({
                             id: doc.id,
                             ...doc.data()
                         }));
-                        // Sort manually in memory (Rule 2: No complex queries/orderBy)
+                        // Sort manually in memory
                         const sorted = newMessages.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
                         setMessages(sorted);
                     },
@@ -88,7 +112,7 @@
                 );
 
                 return () => unsubscribe();
-            }, [user]);
+            }, [user, fb]);
 
             const saveUsername = () => {
                 if (username.trim()) {
@@ -98,25 +122,26 @@
             };
 
             const sendMessage = async () => {
-                if (!inputText.trim() || !user) return;
+                if (!inputText.trim() || !user || !fb || !window.dbInstance) return;
                 
                 const text = inputText.trim();
                 setInputText('');
 
                 try {
-                    const messagesCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-                    await addDoc(messagesCol, {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-chat-app';
+                    const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
+                    await fb.addDoc(messagesCol, {
                         user: username,
                         userId: user.uid,
                         content: text,
-                        timestamp: serverTimestamp()
+                        timestamp: fb.serverTimestamp()
                     });
                 } catch (err) {
                     console.error("Error sending message:", err);
                 }
             };
 
-            if (isConnecting) {
+            if (isConnecting || !fb) {
                 return (
                     <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] text-[#dbdee1]">
                         <div className="text-center">
@@ -156,7 +181,6 @@
 
             return (
                 <div className="flex h-screen w-full select-none overflow-hidden bg-[#313338]">
-                    {/* Servers Sidebar */}
                     <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
                         <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center cursor-pointer relative">
                             <i data-lucide="globe" className="w-6 h-6"></i>
@@ -168,7 +192,6 @@
                         </div>
                     </div>
 
-                    {/* Channels Sidebar */}
                     <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 border-r border-black/20">
                         <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white truncate shadow-sm">
                             Global Community
@@ -183,7 +206,6 @@
                             </div>
                         </div>
                         
-                        {/* User Profile Area */}
                         <div className="bg-[#232428] p-2 flex items-center space-x-2">
                             <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs text-white uppercase">{username[0]}</div>
                             <div className="flex-1 min-w-0">
@@ -196,7 +218,6 @@
                         </div>
                     </div>
 
-                    {/* Chat Main Area */}
                     <div className="flex-1 flex flex-col min-w-0">
                         <div className="h-12 border-b border-black/20 flex items-center px-4 shadow-sm bg-[#313338] z-10">
                             <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
@@ -222,7 +243,6 @@
                                 </div>
                             ))}
                             
-                            {/* Welcome Message */}
                             <div className="py-8 text-center border-b border-white/5 mb-4">
                                 <div className="w-16 h-16 bg-[#3f4147] rounded-full flex items-center justify-center mx-auto mb-4 text-[#dbdee1]">
                                     <i data-lucide="hash" className="w-8 h-8"></i>
@@ -232,7 +252,6 @@
                             </div>
                         </div>
 
-                        {/* Input Area */}
                         <div className="p-4">
                             <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center shadow-inner group focus-within:ring-1 ring-[#5865f2]/50 transition-all">
                                 <div className="w-6 h-6 bg-[#b5bac1] rounded-full flex items-center justify-center mr-3 cursor-pointer hover:bg-white transition-colors">
@@ -246,8 +265,6 @@
                                     onKeyDown={e => e.key === 'Enter' && sendMessage()} 
                                 />
                                 <div className="flex space-x-3 ml-2 text-[#b5bac1]">
-                                    <i data-lucide="gift" className="w-5 h-5 cursor-not-allowed hover:text-white"></i>
-                                    <i data-lucide="sticky-note" className="w-5 h-5 cursor-not-allowed hover:text-white"></i>
                                     <i data-lucide="smile" className="w-5 h-5 cursor-not-allowed hover:text-white"></i>
                                 </div>
                             </div>
