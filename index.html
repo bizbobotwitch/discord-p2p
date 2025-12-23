@@ -24,18 +24,10 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, query, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
-            authDomain: "discord2-1ed09.firebaseapp.com",
-            projectId: "discord2-1ed09",
-            storageBucket: "discord2-1ed09.firebasestorage.app",
-            messagingSenderId: "856172729472",
-            appId: "1:856172729472:web:fa00078f5968d3e30a0265",
-            measurementId: "G-XLL488F4K0"
-        };
+        const firebaseConfig = JSON.parse(__firebase_config);
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -47,7 +39,7 @@
         window.FirebaseSDK = { 
             auth, db, appId,
             collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, query, updateDoc
+            signInAnonymously, onAuthStateChanged, signInWithCustomToken, doc, setDoc, query, updateDoc
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
