@@ -22,20 +22,16 @@
 <body>
     <div id="root"></div>
 
-    <!-- Load Firebase as standard scripts to avoid module conflicts with Babel -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Expose Firebase to the React app
         window.FirebaseSDK = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, 
             signInWithCustomToken, getFirestore, collection, addDoc, 
             query, onSnapshot, serverTimestamp
         };
-        
-        // Signal that Firebase is ready
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -45,74 +41,73 @@
         const App = () => {
             const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
+            const [config, setConfig] = useState(localStorage.getItem('fb-config') || (typeof __firebase_config !== 'undefined' ? __firebase_config : null));
             const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
             const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
             const [messages, setMessages] = useState([]);
             const [inputText, setInputText] = useState('');
-            const [isConnecting, setIsConnecting] = useState(true);
+            const [status, setStatus] = useState('Initializing...');
 
-            // Wait for Firebase to be globally available
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
-                if (!fb) {
-                    window.addEventListener('firebase-ready', handleReady);
-                    return () => window.removeEventListener('firebase-ready', handleReady);
-                }
+                if (!fb) window.addEventListener('firebase-ready', handleReady);
+                return () => window.removeEventListener('firebase-ready', handleReady);
             }, [fb]);
 
-            // Handle Authentication
             useEffect(() => {
-                if (!fb) return;
+                if (!fb || !config) return;
                 
-                const firebaseConfig = JSON.parse(__firebase_config);
-                const app = fb.initializeApp(firebaseConfig);
-                const auth = fb.getAuth(app);
-                const db = fb.getFirestore(app);
-                window.dbInstance = db; // Store for messaging
+                try {
+                    const parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
+                    const app = fb.initializeApp(parsedConfig);
+                    const auth = fb.getAuth(app);
+                    const db = fb.getFirestore(app);
+                    window.dbInstance = db;
 
-                const initAuth = async () => {
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await fb.signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await fb.signInAnonymously(auth);
+                    const initAuth = async () => {
+                        setStatus('Authenticating...');
+                        try {
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await fb.signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await fb.signInAnonymously(auth);
+                            }
+                        } catch (err) {
+                            console.error("Auth error:", err);
+                            setStatus('Auth Failed');
                         }
-                    } catch (err) {
-                        console.error("Auth error:", err);
-                    }
-                };
+                    };
 
-                initAuth();
-                const unsubscribe = fb.onAuthStateChanged(auth, (currentUser) => {
-                    setUser(currentUser);
-                    setIsConnecting(false);
-                });
-                return () => unsubscribe();
-            }, [fb]);
+                    initAuth();
+                    const unsubscribe = fb.onAuthStateChanged(auth, (currentUser) => {
+                        setUser(currentUser);
+                        setStatus(currentUser ? 'Connected' : 'Waiting for Auth...');
+                    });
+                    return () => unsubscribe();
+                } catch (e) {
+                    console.error("Config error:", e);
+                    setStatus('Invalid Configuration');
+                }
+            }, [fb, config]);
 
-            // Handle Real-time Messages
             useEffect(() => {
                 if (!user || !fb || !window.dbInstance) return;
 
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-chat-app';
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'global-chat';
                 const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
                 
-                const unsubscribe = fb.onSnapshot(
-                    messagesCol, 
-                    (snapshot) => {
-                        const newMessages = snapshot.docs.map(doc => ({
-                            id: doc.id,
-                            ...doc.data()
-                        }));
-                        // Sort manually in memory
-                        const sorted = newMessages.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-                        setMessages(sorted);
-                    },
-                    (error) => console.error("Firestore error:", error)
-                );
+                const unsubscribe = fb.onSnapshot(messagesCol, (snapshot) => {
+                    const newMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setMessages(newMessages.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
+                }, (error) => console.error("Firestore error:", error));
 
                 return () => unsubscribe();
             }, [user, fb]);
+
+            const saveConfig = (val) => {
+                localStorage.setItem('fb-config', val);
+                setConfig(val);
+            };
 
             const saveUsername = () => {
                 if (username.trim()) {
@@ -123,12 +118,10 @@
 
             const sendMessage = async () => {
                 if (!inputText.trim() || !user || !fb || !window.dbInstance) return;
-                
                 const text = inputText.trim();
                 setInputText('');
-
                 try {
-                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-chat-app';
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'global-chat';
                     const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
                     await fb.addDoc(messagesCol, {
                         user: username,
@@ -136,17 +129,39 @@
                         content: text,
                         timestamp: fb.serverTimestamp()
                     });
-                } catch (err) {
-                    console.error("Error sending message:", err);
-                }
+                } catch (err) { console.error(err); }
             };
 
-            if (isConnecting || !fb) {
+            // Setup View for GitHub Users
+            if (!config) {
+                return (
+                    <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] p-4 text-white">
+                        <div className="bg-[#313338] p-8 rounded-xl shadow-2xl w-full max-w-md border border-white/5">
+                            <h2 className="text-2xl font-bold mb-2">First-Time Setup</h2>
+                            <p className="text-sm text-[#949ba4] mb-6">Paste your Firebase configuration JSON below to enable the cloud server.</p>
+                            <textarea 
+                                className="w-full h-40 bg-[#1e1f22] p-3 rounded font-mono text-xs border border-white/10 mb-4 outline-none focus:border-[#5865f2]"
+                                placeholder='{ "apiKey": "...", "authDomain": "...", ... }'
+                                id="configInput"
+                            />
+                            <button 
+                                onClick={() => saveConfig(document.getElementById('configInput').value)}
+                                className="w-full bg-[#5865f2] py-3 rounded font-bold hover:bg-[#4752c4]"
+                            >
+                                Connect to Server
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (!user) {
                 return (
                     <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] text-[#dbdee1]">
                         <div className="text-center">
                             <i data-lucide="loader-2" className="w-8 h-8 animate-spin mx-auto mb-4 text-[#5865f2]"></i>
-                            <p className="text-sm font-medium">Connecting to Cloud Server...</p>
+                            <p className="text-sm font-medium">{status}</p>
+                            <button onClick={() => {localStorage.clear(); window.location.reload();}} className="mt-4 text-xs text-red-400 hover:underline">Reset App</button>
                         </div>
                     </div>
                 );
@@ -155,118 +170,65 @@
             if (!isUsernameSet) {
                 return (
                     <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22]">
-                        <div className="bg-[#313338] p-8 rounded-lg shadow-xl w-80 text-center scale-in border border-white/5">
-                            <div className="w-16 h-16 bg-[#5865f2] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                                <i data-lucide="message-square" className="w-8 h-8 text-white"></i>
-                            </div>
-                            <h2 className="text-xl font-bold mb-2 text-white">Welcome</h2>
-                            <p className="text-xs text-[#949ba4] mb-6">Enter a display name to join the global chat.</p>
-                            <input 
-                                value={username} 
-                                onChange={e => setUsername(e.target.value)} 
-                                onKeyDown={e => e.key === 'Enter' && saveUsername()} 
-                                placeholder="Username"
-                                className="w-full bg-[#1e1f22] p-2 rounded mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2] transition-colors" 
-                            />
-                            <button 
-                                onClick={saveUsername} 
-                                className="w-full bg-[#5865f2] py-2 rounded font-bold hover:bg-[#4752c4] text-white transition-all active:scale-95"
-                            >
-                                Start Chatting
-                            </button>
+                        <div className="bg-[#313338] p-8 rounded-lg shadow-xl w-80 text-center border border-white/5">
+                            <h2 className="text-xl font-bold mb-4 text-white">Choose Name</h2>
+                            <input value={username} onChange={e => setUsername(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveUsername()} placeholder="Username" className="w-full bg-[#1e1f22] p-2 rounded mb-4 outline-none border border-white/10 text-white" />
+                            <button onClick={saveUsername} className="w-full bg-[#5865f2] py-2 rounded font-bold text-white">Join Chat</button>
                         </div>
                     </div>
                 );
             }
 
             return (
-                <div className="flex h-screen w-full select-none overflow-hidden bg-[#313338]">
-                    <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
-                        <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center cursor-pointer relative">
+                <div className="flex h-screen w-full bg-[#313338] text-[#dbdee1]">
+                    {/* Servers */}
+                    <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2">
+                        <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center">
                             <i data-lucide="globe" className="w-6 h-6"></i>
-                            <div className="absolute -left-3 w-2 h-8 bg-white rounded-r-full" />
-                        </div>
-                        <div className="w-8 h-[2px] bg-[#35363c] rounded-full mx-auto" />
-                        <div className="w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-[#23a559] hover:bg-[#23a559] hover:text-white hover:rounded-[16px] transition-all cursor-not-allowed opacity-50">
-                            <i data-lucide="plus"></i>
                         </div>
                     </div>
 
-                    <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 border-r border-black/20">
-                        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white truncate shadow-sm">
-                            Global Community
-                        </div>
-                        <div className="flex-1 p-2 space-y-4">
-                            <div>
-                                <div className="text-[11px] uppercase font-bold text-[#949ba4] px-2 mb-2 tracking-wider">Text Channels</div>
-                                <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md">
-                                    <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
-                                    <span className="font-medium text-sm">general-chat</span>
-                                </div>
+                    {/* Channels */}
+                    <div className="w-60 bg-[#2b2d31] flex flex-col border-r border-black/20">
+                        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white">Global Server</div>
+                        <div className="flex-1 p-2">
+                            <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md">
+                                <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
+                                <span className="font-medium text-sm">general</span>
                             </div>
                         </div>
-                        
                         <div className="bg-[#232428] p-2 flex items-center space-x-2">
-                            <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs text-white uppercase">{username[0]}</div>
+                            <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs">{username[0]}</div>
                             <div className="flex-1 min-w-0">
                                 <div className="text-white text-xs font-bold truncate">{username}</div>
-                                <div className="text-[10px] uppercase font-bold text-[#23a559]">Online</div>
-                            </div>
-                            <div onClick={() => { localStorage.removeItem('chat-username'); window.location.reload(); }} className="p-1 hover:bg-white/10 rounded cursor-pointer transition-colors group">
-                                <i data-lucide="log-out" className="w-4 h-4 text-[#b5bac1] group-hover:text-red-400"></i>
+                                <div className="text-[10px] text-[#23a559] uppercase font-bold">Online</div>
                             </div>
                         </div>
                     </div>
 
+                    {/* Chat */}
                     <div className="flex-1 flex flex-col min-w-0">
-                        <div className="h-12 border-b border-black/20 flex items-center px-4 shadow-sm bg-[#313338] z-10">
+                        <div className="h-12 border-b border-black/20 flex items-center px-4 shadow-sm">
                             <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
-                            <span className="font-bold text-white text-sm">general-chat</span>
-                            <div className="ml-2 w-2 h-2 rounded-full bg-[#23a559]"></div>
+                            <span className="font-bold text-white text-sm">general</span>
                         </div>
-                        
                         <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-4">
                             {messages.map(m => (
-                                <div key={m.id} className="flex items-start space-x-3 p-1 rounded hover:bg-black/5 group transition-colors">
-                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase shadow-sm">
-                                        {m.user ? m.user[0] : '?'}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
+                                <div key={m.id} className="flex items-start space-x-3 p-1 rounded hover:bg-black/5">
+                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
+                                    <div>
                                         <div className="flex items-baseline space-x-2">
-                                            <span className="font-bold text-white text-sm hover:underline cursor-pointer">{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">
-                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Sending...'}
-                                            </span>
+                                            <span className="font-bold text-white text-sm">{m.user}</span>
+                                            <span className="text-[10px] text-[#949ba4]">{m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}</span>
                                         </div>
-                                        <p className="text-sm text-[#dbdee1] break-words whitespace-pre-wrap">{m.content}</p>
+                                        <p className="text-sm text-[#dbdee1] break-words">{m.content}</p>
                                     </div>
                                 </div>
                             ))}
-                            
-                            <div className="py-8 text-center border-b border-white/5 mb-4">
-                                <div className="w-16 h-16 bg-[#3f4147] rounded-full flex items-center justify-center mx-auto mb-4 text-[#dbdee1]">
-                                    <i data-lucide="hash" className="w-8 h-8"></i>
-                                </div>
-                                <h3 className="text-2xl font-bold text-white mb-1">Welcome to #general-chat!</h3>
-                                <p className="text-[#949ba4] text-sm">This is the start of the global conversation.</p>
-                            </div>
                         </div>
-
                         <div className="p-4">
-                            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center shadow-inner group focus-within:ring-1 ring-[#5865f2]/50 transition-all">
-                                <div className="w-6 h-6 bg-[#b5bac1] rounded-full flex items-center justify-center mr-3 cursor-pointer hover:bg-white transition-colors">
-                                    <i data-lucide="plus" className="w-4 h-4 text-[#383a40]"></i>
-                                </div>
-                                <input 
-                                    className="flex-1 bg-transparent outline-none text-sm text-[#dbdee1] placeholder-[#949ba4]" 
-                                    placeholder={`Message #general-chat`} 
-                                    value={inputText} 
-                                    onChange={e => setInputText(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && sendMessage()} 
-                                />
-                                <div className="flex space-x-3 ml-2 text-[#b5bac1]">
-                                    <i data-lucide="smile" className="w-5 h-5 cursor-not-allowed hover:text-white"></i>
-                                </div>
+                            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center">
+                                <input className="flex-1 bg-transparent outline-none text-sm text-[#dbdee1]" placeholder="Message #general" value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} />
                             </div>
                         </div>
                     </div>
