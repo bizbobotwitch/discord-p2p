@@ -27,13 +27,20 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, query, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // Safely parse config
+        let firebaseConfig = {};
+        try {
+            firebaseConfig = typeof __firebase_config === 'string' 
+                ? JSON.parse(__firebase_config) 
+                : __firebase_config;
+        } catch (e) {
+            console.error("Config parse error:", e);
+        }
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Required App ID for Firestore paths
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'discord-clone-v2';
 
         window.FirebaseSDK = { 
@@ -51,6 +58,7 @@
             const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
             const [profile, setProfile] = useState(null);
+            const [connError, setConnError] = useState(null);
             
             const [currentServer, setCurrentServer] = useState('global');
             const [activeChannel, setActiveChannel] = useState('general');
@@ -69,13 +77,12 @@
                 return () => window.removeEventListener('firebase-ready', handleReady);
             }, [fb]);
 
-            // Rule 3: Auth BEFORE Queries
+            // RULE 3: AUTH BEFORE QUERIES
             useEffect(() => {
                 if (!fb) return;
                 
                 const initAuth = async () => {
                     try {
-                        // Check for custom token first, then fallback to anonymous
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
                         } else {
@@ -83,6 +90,7 @@
                         }
                     } catch (e) {
                         console.error("Auth error:", e);
+                        setConnError("Failed to authenticate. Please check your connection.");
                     }
                 };
                 initAuth();
@@ -93,12 +101,10 @@
                 return () => unsubscribe();
             }, [fb]);
 
-            // Profile Listener - Rule 1: Correct Private Path
+            // Profile Listener - Rule 1: Private Path
             useEffect(() => {
-                // GUARD: Must have user before querying
                 if (!user || !fb) return;
 
-                // Path format: /artifacts/{appId}/users/{userId}/{collectionName}/{docId}
                 const profileDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'settings', 'profile');
                 
                 const initProfile = async () => {
@@ -117,11 +123,10 @@
                 return () => unsubscribe();
             }, [user, fb]);
 
-            // Servers Listener - Rule 1: Correct Public Path
+            // Servers Listener - Rule 1: Public Path
             useEffect(() => {
                 if (!user || !fb) return;
 
-                // Path format: /artifacts/{appId}/public/data/{collectionName}
                 const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'servers');
                 const unsubscribe = fb.onSnapshot(col, (snap) => {
                     setServers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -130,21 +135,20 @@
                 return () => unsubscribe();
             }, [user, fb]);
 
-            // Messages Listener - Rule 1: Correct Public Path
+            // Messages Listener - Rule 1 & Rule 2
             useEffect(() => {
                 if (!user || !fb) return;
                 
                 const serverId = currentServer === 'global' ? 'global' : currentServer;
-                // Rule 1: All public data in /artifacts/{appId}/public/data/{collectionName}
                 const colName = `msg_${serverId}_${activeChannel}`;
                 const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', colName);
                 
                 const unsubscribe = fb.onSnapshot(col, (snap) => {
                     const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                    // Rule 2: Sort in JS memory (No orderBy in query)
+                    // Sort in JS to avoid complex query indexing issues
                     setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
                 }, (err) => {
-                    console.error("Messages permission error:", err);
+                    console.error("Messages error:", err);
                     setMessages([]);
                 });
                 
@@ -197,11 +201,21 @@
                 } catch (e) { console.error("Set username error:", e); }
             };
 
-            if (!user) return <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center font-bold text-white">Connecting...</div>;
+            if (connError) return (
+                <div className="h-screen w-full bg-[#1e1f22] flex flex-col items-center justify-center p-6 text-white text-center">
+                    <div className="bg-red-500/10 border border-red-500/50 p-6 rounded-xl max-w-sm">
+                        <i data-lucide="wifi-off" className="w-12 h-12 text-red-500 mx-auto mb-4"></i>
+                        <h2 className="text-xl font-bold mb-2">Connection Error</h2>
+                        <p className="text-sm text-[#949ba4]">{connError}</p>
+                    </div>
+                </div>
+            );
+
+            if (!user) return <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center font-bold text-white">Connecting to secure chat...</div>;
 
             if (!profile?.username) return (
                 <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-white">
-                    <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center border border-white/5 shadow-2xl">
+                    <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center border border-white/5 shadow-2xl scale-in">
                         <div className="w-20 h-20 bg-[#5865f2] rounded-3xl flex items-center justify-center mx-auto mb-6">
                             <i data-lucide="user-plus" className="w-10 h-10 text-white"></i>
                         </div>
@@ -222,6 +236,7 @@
 
             return (
                 <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden">
+                    {/* Servers Sidebar */}
                     <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0">
                         <div 
                             onClick={() => setCurrentServer('global')}
@@ -234,6 +249,7 @@
                             <div 
                                 key={s.id}
                                 onClick={() => setCurrentServer(s.id)}
+                                title={s.name}
                                 className={`w-12 h-12 rounded-[24px] flex items-center justify-center transition-all cursor-pointer font-bold uppercase text-xs text-center px-1 overflow-hidden leading-tight ${currentServer === s.id ? 'bg-[#5865f2] text-white rounded-[12px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white hover:rounded-[12px]'}`}
                             >
                                 {s.name.substring(0, 3)}
@@ -247,11 +263,12 @@
                         </div>
                     </div>
 
+                    {/* Channels Sidebar */}
                     <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 hidden lg:flex">
                         <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm truncate">
                             {currentServer === 'global' ? 'Global Space' : (servers.find(s => s.id === currentServer)?.name || 'Server')}
                         </div>
-                        <div className="flex-1 p-3 space-y-4">
+                        <div className="flex-1 p-3 space-y-4 overflow-y-auto">
                             <div>
                                 <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Channels</div>
                                 <div className="flex items-center px-2 py-1.5 rounded-md bg-[#3f4147] text-white">
@@ -262,24 +279,31 @@
                         </div>
                         <div className="bg-[#232428] p-3">
                             <div className="flex items-center space-x-2">
-                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase text-white">{profile.username[0]}</div>
+                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase text-white shadow-md">{profile.username[0]}</div>
                                 <div className="flex-1 min-w-0">
                                     <div className="text-white text-xs font-bold truncate">{profile.username}</div>
-                                    <div className="text-[10px] text-[#949ba4] truncate">#{user.uid.slice(0, 5)}</div>
+                                    <div className="text-[10px] text-[#949ba4] truncate">Online</div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
+                    {/* Chat Area */}
                     <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
                         <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm">
                             <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
                             <span className="font-bold text-white text-sm">general</span>
                         </div>
                         <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+                            {messages.length === 0 && (
+                                <div className="h-full flex flex-col items-center justify-center text-center opacity-20 py-12">
+                                    <i data-lucide="message-square" className="w-16 h-16 mb-4"></i>
+                                    <p className="text-sm">Welcome to general! Start the conversation.</p>
+                                </div>
+                            )}
                             {messages.map(m => (
                                 <div key={m.id} className="flex items-start space-x-3 group">
-                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase text-sm">{m.user ? m.user[0] : '?'}</div>
+                                    <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase text-sm shadow-md">{m.user ? m.user[0] : '?'}</div>
                                     <div className="min-w-0">
                                         <div className="flex items-baseline space-x-2">
                                             <span className={`font-bold text-[15px] ${m.userId === user.uid ? 'text-indigo-300' : 'text-white'}`}>{m.user}</span>
@@ -308,19 +332,22 @@
                         </div>
                     </div>
 
+                    {/* Modal for Creating Server */}
                     {showCreateModal && (
                         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-white">
-                            <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center border border-white/5 shadow-2xl">
+                            <div className="bg-[#313338] p-8 rounded-2xl w-full max-w-sm text-center border border-white/5 shadow-2xl scale-in">
                                 <h2 className="text-2xl font-bold mb-2">Create Server</h2>
+                                <p className="text-sm text-[#949ba4] mb-6">Give your new server a personality with a name.</p>
                                 <input 
-                                    className="w-full bg-[#1e1f22] p-4 rounded-xl mb-4 outline-none border border-white/10 focus:border-[#5865f2] text-white" 
+                                    className="w-full bg-[#1e1f22] p-4 rounded-xl mb-6 outline-none border border-white/10 focus:border-[#5865f2] text-white" 
                                     placeholder="Server Name" 
                                     value={newServerName}
                                     onChange={e => setNewServerName(e.target.value)}
+                                    maxLength={20}
                                 />
                                 <div className="flex space-x-3">
                                     <button onClick={() => setShowCreateModal(false)} className="flex-1 py-3 text-sm font-bold text-[#dbdee1] hover:underline">Cancel</button>
-                                    <button onClick={handleCreateServer} className="flex-1 bg-[#5865f2] py-3 rounded-xl font-bold text-white shadow-lg">Create</button>
+                                    <button onClick={handleCreateServer} className="flex-1 bg-[#5865f2] py-3 rounded-xl font-bold text-white shadow-lg active:scale-95 transition-transform">Create</button>
                                 </div>
                             </div>
                         </div>
