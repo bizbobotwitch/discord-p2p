@@ -24,29 +24,39 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.FirebaseSDK = {
-            initializeApp, getAuth, signInAnonymously, onAuthStateChanged, 
-            signInWithCustomToken, getFirestore, collection, addDoc, 
-            query, onSnapshot, serverTimestamp
+        // Your specific Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
+            authDomain: "discord2-1ed09.firebaseapp.com",
+            projectId: "discord2-1ed09",
+            storageBucket: "discord2-1ed09.firebasestorage.app",
+            messagingSenderId: "856172729472",
+            appId: "1:856172729472:web:fa00078f5968d3e30a0265",
+            measurementId: "G-XLL488F4K0"
         };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.FirebaseSDK = { auth, db, collection, addDoc, onSnapshot, serverTimestamp, signInAnonymously, onAuthStateChanged };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect } = React;
 
         const App = () => {
             const [fb, setFb] = useState(window.FirebaseSDK);
             const [user, setUser] = useState(null);
-            const [config, setConfig] = useState(localStorage.getItem('fb-config') || (typeof __firebase_config !== 'undefined' ? __firebase_config : null));
             const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
             const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
             const [messages, setMessages] = useState([]);
             const [inputText, setInputText] = useState('');
-            const [status, setStatus] = useState('Initializing...');
+            const [status, setStatus] = useState('Connecting to Cloud...');
 
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
@@ -55,46 +65,30 @@
             }, [fb]);
 
             useEffect(() => {
-                if (!fb || !config) return;
+                if (!fb) return;
                 
-                try {
-                    const parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
-                    const app = fb.initializeApp(parsedConfig);
-                    const auth = fb.getAuth(app);
-                    const db = fb.getFirestore(app);
-                    window.dbInstance = db;
+                const initAuth = async () => {
+                    try {
+                        await fb.signInAnonymously(fb.auth);
+                    } catch (err) {
+                        console.error("Auth error:", err);
+                        setStatus('Connection Failed. Check internet.');
+                    }
+                };
 
-                    const initAuth = async () => {
-                        setStatus('Authenticating...');
-                        try {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await fb.signInWithCustomToken(auth, __initial_auth_token);
-                            } else {
-                                await fb.signInAnonymously(auth);
-                            }
-                        } catch (err) {
-                            console.error("Auth error:", err);
-                            setStatus('Auth Failed');
-                        }
-                    };
-
-                    initAuth();
-                    const unsubscribe = fb.onAuthStateChanged(auth, (currentUser) => {
-                        setUser(currentUser);
-                        setStatus(currentUser ? 'Connected' : 'Waiting for Auth...');
-                    });
-                    return () => unsubscribe();
-                } catch (e) {
-                    console.error("Config error:", e);
-                    setStatus('Invalid Configuration');
-                }
-            }, [fb, config]);
+                initAuth();
+                const unsubscribe = fb.onAuthStateChanged(fb.auth, (currentUser) => {
+                    setUser(currentUser);
+                    if (currentUser) setStatus('Connected');
+                });
+                return () => unsubscribe();
+            }, [fb]);
 
             useEffect(() => {
-                if (!user || !fb || !window.dbInstance) return;
+                if (!user || !fb) return;
 
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'global-chat';
-                const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
+                const appId = 'discord-clone-v2';
+                const messagesCol = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', 'messages');
                 
                 const unsubscribe = fb.onSnapshot(messagesCol, (snapshot) => {
                     const newMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -104,25 +98,20 @@
                 return () => unsubscribe();
             }, [user, fb]);
 
-            const saveConfig = (val) => {
-                localStorage.setItem('fb-config', val);
-                setConfig(val);
-            };
-
             const saveUsername = () => {
-                if (username.trim()) {
+                if (username.trim() && username.length < 20) {
                     localStorage.setItem('chat-username', username.trim());
                     setIsUsernameSet(true);
                 }
             };
 
             const sendMessage = async () => {
-                if (!inputText.trim() || !user || !fb || !window.dbInstance) return;
+                if (!inputText.trim() || !user || !fb || inputText.length > 500) return;
                 const text = inputText.trim();
                 setInputText('');
                 try {
-                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'global-chat';
-                    const messagesCol = fb.collection(window.dbInstance, 'artifacts', appId, 'public', 'data', 'messages');
+                    const appId = 'discord-clone-v2';
+                    const messagesCol = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', 'messages');
                     await fb.addDoc(messagesCol, {
                         user: username,
                         userId: user.uid,
@@ -132,36 +121,12 @@
                 } catch (err) { console.error(err); }
             };
 
-            // Setup View for GitHub Users
-            if (!config) {
-                return (
-                    <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] p-4 text-white">
-                        <div className="bg-[#313338] p-8 rounded-xl shadow-2xl w-full max-w-md border border-white/5">
-                            <h2 className="text-2xl font-bold mb-2">First-Time Setup</h2>
-                            <p className="text-sm text-[#949ba4] mb-6">Paste your Firebase configuration JSON below to enable the cloud server.</p>
-                            <textarea 
-                                className="w-full h-40 bg-[#1e1f22] p-3 rounded font-mono text-xs border border-white/10 mb-4 outline-none focus:border-[#5865f2]"
-                                placeholder='{ "apiKey": "...", "authDomain": "...", ... }'
-                                id="configInput"
-                            />
-                            <button 
-                                onClick={() => saveConfig(document.getElementById('configInput').value)}
-                                className="w-full bg-[#5865f2] py-3 rounded font-bold hover:bg-[#4752c4]"
-                            >
-                                Connect to Server
-                            </button>
-                        </div>
-                    </div>
-                );
-            }
-
             if (!user) {
                 return (
                     <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] text-[#dbdee1]">
                         <div className="text-center">
                             <i data-lucide="loader-2" className="w-8 h-8 animate-spin mx-auto mb-4 text-[#5865f2]"></i>
                             <p className="text-sm font-medium">{status}</p>
-                            <button onClick={() => {localStorage.clear(); window.location.reload();}} className="mt-4 text-xs text-red-400 hover:underline">Reset App</button>
                         </div>
                     </div>
                 );
@@ -170,10 +135,21 @@
             if (!isUsernameSet) {
                 return (
                     <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22]">
-                        <div className="bg-[#313338] p-8 rounded-lg shadow-xl w-80 text-center border border-white/5">
-                            <h2 className="text-xl font-bold mb-4 text-white">Choose Name</h2>
-                            <input value={username} onChange={e => setUsername(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveUsername()} placeholder="Username" className="w-full bg-[#1e1f22] p-2 rounded mb-4 outline-none border border-white/10 text-white" />
-                            <button onClick={saveUsername} className="w-full bg-[#5865f2] py-2 rounded font-bold text-white">Join Chat</button>
+                        <div className="bg-[#313338] p-8 rounded-lg shadow-xl w-80 text-center scale-in border border-white/5">
+                            <div className="w-16 h-16 bg-[#5865f2] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+                                <i data-lucide="smile" className="w-8 h-8 text-white"></i>
+                            </div>
+                            <h2 className="text-xl font-bold mb-2 text-white">Welcome</h2>
+                            <p className="text-xs text-[#949ba4] mb-6">Enter a safe nickname to join the chat.</p>
+                            <input 
+                                value={username} 
+                                onChange={e => setUsername(e.target.value)} 
+                                onKeyDown={e => e.key === 'Enter' && saveUsername()} 
+                                placeholder="Safe Nickname"
+                                maxLength={15}
+                                className="w-full bg-[#1e1f22] p-2 rounded mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2]" 
+                            />
+                            <button onClick={saveUsername} className="w-full bg-[#5865f2] py-2 rounded font-bold text-white hover:bg-[#4752c4]">Join Global Chat</button>
                         </div>
                     </div>
                 );
@@ -181,16 +157,18 @@
 
             return (
                 <div className="flex h-screen w-full bg-[#313338] text-[#dbdee1]">
-                    {/* Servers */}
-                    <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2">
-                        <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center">
+                    {/* Servers Sidebar */}
+                    <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
+                        <div className="w-12 h-12 rounded-[16px] bg-[#5865f2] text-white flex items-center justify-center cursor-pointer transition-all">
                             <i data-lucide="globe" className="w-6 h-6"></i>
                         </div>
                     </div>
 
-                    {/* Channels */}
+                    {/* Channels Sidebar */}
                     <div className="w-60 bg-[#2b2d31] flex flex-col border-r border-black/20">
-                        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white">Global Server</div>
+                        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm">
+                            Public Server
+                        </div>
                         <div className="flex-1 p-2">
                             <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md">
                                 <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
@@ -198,37 +176,54 @@
                             </div>
                         </div>
                         <div className="bg-[#232428] p-2 flex items-center space-x-2">
-                            <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs">{username[0]}</div>
+                            <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase">{username[0]}</div>
                             <div className="flex-1 min-w-0">
                                 <div className="text-white text-xs font-bold truncate">{username}</div>
                                 <div className="text-[10px] text-[#23a559] uppercase font-bold">Online</div>
                             </div>
+                            <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="p-1 hover:bg-white/10 rounded">
+                                <i data-lucide="log-out" className="w-4 h-4 text-[#b5bac1]"></i>
+                            </button>
                         </div>
                     </div>
 
-                    {/* Chat */}
+                    {/* Main Chat Area */}
                     <div className="flex-1 flex flex-col min-w-0">
                         <div className="h-12 border-b border-black/20 flex items-center px-4 shadow-sm">
                             <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
                             <span className="font-bold text-white text-sm">general</span>
                         </div>
+                        
                         <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-4">
                             {messages.map(m => (
-                                <div key={m.id} className="flex items-start space-x-3 p-1 rounded hover:bg-black/5">
+                                <div key={m.id} className="flex items-start space-x-3 p-1 rounded hover:bg-black/5 group">
                                     <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
-                                    <div>
+                                    <div className="min-w-0">
                                         <div className="flex items-baseline space-x-2">
-                                            <span className="font-bold text-white text-sm">{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">{m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}</span>
+                                            <span className="font-bold text-white text-sm hover:underline cursor-pointer">{m.user}</span>
+                                            <span className="text-[10px] text-[#949ba4]">
+                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
+                                            </span>
                                         </div>
                                         <p className="text-sm text-[#dbdee1] break-words">{m.content}</p>
                                     </div>
                                 </div>
                             ))}
                         </div>
+
                         <div className="p-4">
-                            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center">
-                                <input className="flex-1 bg-transparent outline-none text-sm text-[#dbdee1]" placeholder="Message #general" value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} />
+                            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center shadow-inner">
+                                <input 
+                                    className="flex-1 bg-transparent outline-none text-sm text-[#dbdee1] placeholder-[#949ba4]" 
+                                    placeholder="Message #general" 
+                                    value={inputText} 
+                                    maxLength={500}
+                                    onChange={e => setInputText(e.target.value)} 
+                                    onKeyDown={e => e.key === 'Enter' && sendMessage()} 
+                                />
+                                <div className="flex space-x-3 ml-2 text-[#b5bac1]">
+                                    <i data-lucide="smile" className="w-5 h-5 cursor-pointer hover:text-white" onClick={sendMessage}></i>
+                                </div>
                             </div>
                         </div>
                     </div>
