@@ -1,92 +1,78 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, query } from 'firebase/firestore';
 import { 
-  Send, Plus, MessageSquare, Search, 
-  Smile, Reply, X, Hash, Settings, Heart, ShieldAlert
+  Hash, Settings, Mic, MicOff, Video, VideoOff, Phone, Send, Plus, 
+  Compass, User, Check, Link as LinkIcon, Github, Smile, Gift, 
+  Sticker, Search, ShieldAlert, Clock
 } from 'lucide-react';
 
-// Initialize Firebase using the provided configuration
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'chat-v2-soft';
+const appId = "discord-clone-v2";
 
 const App = () => {
-  // --- Styling Fix: Inject Tailwind ---
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.tailwindcss.com';
-    document.head.appendChild(script);
-    
-    // Set background color on body to prevent white flash
-    document.body.style.backgroundColor = '#0f172a';
-    document.body.style.margin = '0';
-  }, []);
-
-  // --- State Management ---
+  // --- Auth & Safety State ---
   const [user, setUser] = useState(null);
   const [isBanned, setIsBanned] = useState(false);
   const [activeTimeout, setActiveTimeout] = useState(null);
+
+  // --- UI State ---
+  const [activeChannel, setActiveChannel] = useState('general');
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [activeTab, setActiveTab] = useState('messages');
-  const [replyTo, setReplyTo] = useState(null);
-  const messagesEndRef = useRef(null);
+  const [isCalling, setIsCalling] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [showConnectModal, setShowConnectModal] = useState(false);
 
-  // --- Authentication ---
+  // --- Firebase Auth & Safety Guard ---
   useEffect(() => {
     const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Auth failed:", err);
-      }
+      await signInAnonymously(auth);
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsubscribe();
+    return onAuthStateChanged(auth, (u) => setUser(u));
   }, []);
 
-  // --- Real-time Data Listeners ---
   useEffect(() => {
     if (!user) return;
 
-    // Safety check for bans
+    // Listen for Bans
     const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
-    const unsubBans = onSnapshot(banRef, (docSnap) => setIsBanned(docSnap.exists()));
-
-    // Safety check for timeouts
-    const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
-    const unsubTimeouts = onSnapshot(timeoutRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.expiresAt > Date.now()) setActiveTimeout(data.expiresAt);
-        else setActiveTimeout(null);
-      } else setActiveTimeout(null);
+    const unsubBans = onSnapshot(banRef, (doc) => {
+      setIsBanned(doc.exists());
     });
 
-    // Listen for messages
+    // Listen for Timeouts
+    const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
+    const unsubTimeouts = onSnapshot(timeoutRef, (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        if (data.expiresAt > Date.now()) {
+          setActiveTimeout(data.expiresAt);
+        } else {
+          setActiveTimeout(null);
+        }
+      } else {
+        setActiveTimeout(null);
+      }
+    });
+
+    // Listen for Global Messages
     const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const unsubMsgs = onSnapshot(msgCol, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setMessages(data.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-    }, (err) => console.error("Firestore error:", err));
+      setMessages(data.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
+    });
 
-    return () => {
-      unsubBans();
-      unsubTimeouts();
-      unsubMsgs();
-    };
+    return () => { unsubBans(); unsubTimeouts(); unsubMsgs(); };
   }, [user]);
 
-  // Handle timeout countdowns
+  // Check timeout expiration every second
   useEffect(() => {
     if (!activeTimeout) return;
     const interval = setInterval(() => {
@@ -95,32 +81,17 @@ const App = () => {
     return () => clearInterval(interval);
   }, [activeTimeout]);
 
-  // Auto-scroll to bottom on new message
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // --- Actions ---
   const sendMessage = async () => {
     if (!inputText.trim() || !user || activeTimeout || isBanned) return;
     
-    const messageData = {
-      content: inputText,
-      user: `User-${user.uid.slice(0, 4)}`,
-      userId: user.uid,
-      timestamp: serverTimestamp(),
-      color: ['#818cf8', '#f472b6', '#fbbf24', '#34d399'][Math.floor(Math.random() * 4)],
-      replyTo: replyTo ? {
-        user: replyTo.user,
-        content: replyTo.content,
-        id: replyTo.id
-      } : null
-    };
-
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), messageData);
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+        content: inputText,
+        user: `User-${user.uid.slice(0, 4)}`,
+        userId: user.uid,
+        timestamp: serverTimestamp()
+      });
       setInputText('');
-      setReplyTo(null);
     } catch (err) {
       console.error("Failed to send:", err);
     }
@@ -128,184 +99,110 @@ const App = () => {
 
   if (isBanned) {
     return (
-      <div className="h-screen w-full bg-[#0f172a] flex items-center justify-center p-6 text-center">
-        <div className="bg-white/5 backdrop-blur-xl p-10 rounded-3xl border border-red-500/20 shadow-2xl">
-          <ShieldAlert size={64} className="text-red-400 mx-auto mb-6" />
-          <h1 className="text-2xl font-bold text-white mb-2">Account Restricted</h1>
-          <p className="text-slate-400">You have been disconnected from the chat.</p>
+      <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-center">
+        <div className="max-w-md">
+          <ShieldAlert size={64} className="text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-white mb-2">Access Denied</h1>
+          <p className="text-[#949ba4]">Your account has been permanently banned from this server for violating community guidelines.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen w-full bg-[#0f172a] text-slate-200 font-sans overflow-hidden">
-      {/* Navigation Sidebar */}
-      <div className="w-20 flex flex-col items-center py-6 z-10 border-r border-white/5 bg-[#0a0f1d]">
-        <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center text-white mb-8 shadow-lg cursor-pointer hover:rotate-12 transition-all">
-          <MessageSquare size={24} fill="currentColor" />
+    <div className="flex h-screen w-full bg-[#313338] text-[#dbdee1] font-sans overflow-hidden antialiased">
+      {/* Sidebar: Servers */}
+      <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
+        <div className="w-12 h-12 bg-[#5865f2] rounded-[16px] flex items-center justify-center text-white cursor-pointer hover:rounded-[12px] transition-all">
+          <Github size={28} />
+        </div>
+        <div className="w-8 h-[2px] bg-[#35363c] rounded-full mx-auto" />
+        <div className="w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-[#23a559] hover:bg-[#23a559] hover:text-white hover:rounded-[16px] transition-all cursor-pointer">
+          <Plus size={24} />
+        </div>
+      </div>
+
+      {/* Sidebar: Channels */}
+      <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 border-r border-black/20">
+        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm">
+          Community Chat
+        </div>
+        <div className="flex-1 overflow-y-auto py-4 px-2">
+          <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Text Channels</div>
+          <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md cursor-pointer">
+            <Hash size={20} className="mr-1.5 opacity-50" />
+            <span className="font-medium text-[15px]">general</span>
+          </div>
         </div>
         
-        <nav className="flex flex-col space-y-4">
-          <button onClick={() => setActiveTab('messages')} className={`p-3 rounded-xl transition-all ${activeTab === 'messages' ? 'text-white bg-white/10' : 'text-slate-500 hover:text-slate-300'}`}>
-            <Hash size={24} />
-          </button>
-          <button onClick={() => setActiveTab('settings')} className={`p-3 rounded-xl transition-all ${activeTab === 'settings' ? 'text-white bg-white/10' : 'text-slate-500 hover:text-slate-300'}`}>
-            <Settings size={24} />
-          </button>
-        </nav>
-
-        <div className="mt-auto">
-          <div className="w-10 h-10 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center text-xs font-bold">
-            {user?.uid.slice(0, 2).toUpperCase()}
+        {/* User Footer */}
+        <div className="bg-[#232428] p-2 flex items-center space-x-2">
+          <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-[10px] font-bold">
+            {user ? user.uid.slice(0, 2).toUpperCase() : '??'}
           </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-white text-xs font-bold truncate">User-{user?.uid.slice(0,4)}</div>
+            <div className="text-[#949ba4] text-[10px] truncate">Online</div>
+          </div>
+          <Settings size={16} className="text-[#b5bac1] cursor-pointer" />
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col relative bg-[#0f172a]">
-        {activeTab === 'messages' ? (
-          <>
-            <header className="h-16 px-6 flex items-center justify-between border-b border-white/5 bg-[#0f172a]/80 backdrop-blur-md">
-              <div className="flex items-center space-x-3">
-                <div className="w-8 h-8 bg-indigo-500/10 text-indigo-400 rounded-lg flex items-center justify-center">
-                  <Hash size={18} />
-                </div>
-                <div>
-                  <h2 className="font-bold text-slate-100">General Chat</h2>
-                  <p className="text-[11px] text-slate-500 font-medium">Community Lobby</p>
-                </div>
-              </div>
-              <div className="bg-white/5 p-2 rounded-lg cursor-pointer hover:bg-white/10 text-slate-400">
-                <Search size={18} />
-              </div>
-            </header>
+      {/* Main Chat Area */}
+      <div className="flex-1 flex flex-col bg-[#313338] min-w-0">
+        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] shadow-sm">
+          <Hash size={24} className="text-[#80848e] mr-2" />
+          <span className="font-bold text-white uppercase tracking-wide text-sm">general</span>
+        </div>
 
-            {/* Message Feed */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              {messages.length === 0 && (
-                <div className="h-full flex flex-col items-center justify-center text-slate-500">
-                  <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
-                    <MessageSquare size={32} />
-                  </div>
-                  <p className="text-sm">No messages yet. Start the conversation!</p>
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-reverse space-y-4">
+          {messages.map((msg) => (
+            <div key={msg.id} className="flex items-start space-x-4 group px-2 py-1 hover:bg-[#2e3035] rounded-lg transition-colors">
+              <div className="w-10 h-10 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold">
+                {msg.user[0]}
+              </div>
+              <div>
+                <div className="flex items-baseline space-x-2">
+                  <span className="font-bold text-white">{msg.user}</span>
+                  <span className="text-[#949ba4] text-[10px]">
+                    {msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString() : 'Sending...'}
+                  </span>
                 </div>
-              )}
-              {messages.map((msg) => {
-                const isMe = msg.userId === user?.uid;
-                return (
-                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`flex max-w-[80%] ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
-                      {!isMe && (
-                        <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: msg.color }}>
-                          {msg.user?.[0]}
-                        </div>
-                      )}
-                      
-                      <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                        {msg.replyTo && (
-                          <div className="mb-1 text-[11px] text-slate-500 flex items-center gap-1 px-2">
-                            <Reply size={12} className="rotate-180" />
-                            <span>Replying to {msg.replyTo.user}</span>
-                          </div>
-                        )}
-                        <div className="relative group">
-                          <div className={`px-4 py-2.5 rounded-2xl text-[14px] leading-relaxed ${
-                            isMe ? 'bg-indigo-600 text-white rounded-br-sm shadow-lg shadow-indigo-500/10' : 'bg-slate-800 text-slate-100 rounded-bl-sm'
-                          }`}>
-                            {msg.content}
-                          </div>
-                          <button 
-                            onClick={() => setReplyTo(msg)}
-                            className={`absolute top-1/2 -translate-y-1/2 ${isMe ? '-left-8' : '-right-8'} opacity-0 group-hover:opacity-100 p-1.5 hover:bg-white/10 rounded-full text-slate-500 transition-all`}
-                          >
-                            <Reply size={14} />
-                          </button>
-                        </div>
-                        <div className="mt-1 px-1 flex items-center space-x-2 text-[10px] text-slate-500">
-                          {!isMe && <span className="font-bold text-slate-400">{msg.user}</span>}
-                          <span>{msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input Component */}
-            <div className="p-4 bg-[#0f172a]">
-              <div className="max-w-4xl mx-auto">
-                {replyTo && (
-                  <div className="bg-slate-800/50 rounded-t-xl px-4 py-2 border-x border-t border-white/5 flex items-center justify-between text-xs text-slate-400">
-                    <div className="flex items-center gap-2 truncate">
-                      <Reply size={12} />
-                      <span>Replying to <b>{replyTo.user}</b></span>
-                    </div>
-                    <X size={14} className="cursor-pointer hover:text-white" onClick={() => setReplyTo(null)} />
-                  </div>
-                )}
-                
-                <div className={`flex items-center bg-slate-800/80 border border-white/5 px-4 py-2 ${replyTo ? 'rounded-b-2xl' : 'rounded-2xl'} focus-within:border-indigo-500/50 transition-all`}>
-                  <Plus size={20} className="text-slate-500 cursor-pointer hover:text-slate-300 mr-3" />
-                  <input 
-                    value={inputText}
-                    onChange={(e) => setInputText(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                    placeholder={activeTimeout ? "Wait for timeout..." : "Type a message..."}
-                    disabled={!!activeTimeout || !user}
-                    className="flex-1 bg-transparent py-2 outline-none text-sm text-slate-200 placeholder:text-slate-500"
-                  />
-                  <div className="flex items-center space-x-3 ml-3 text-slate-500">
-                    <Smile size={20} className="cursor-pointer hover:text-slate-300" />
-                    <button 
-                      onClick={sendMessage}
-                      disabled={!inputText.trim()}
-                      className={`p-2 rounded-lg transition-all ${inputText.trim() ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-600'}`}
-                    >
-                      <Send size={18} />
-                    </button>
-                  </div>
-                </div>
+                <div className="text-[#dbdee1] leading-relaxed">{msg.content}</div>
               </div>
             </div>
-          </>
-        ) : (
-          <div className="flex-1 p-8 max-w-2xl mx-auto w-full">
-            <h2 className="text-2xl font-bold mb-6">Settings</h2>
-            <div className="space-y-6">
-              <section className="bg-white/5 border border-white/5 rounded-2xl p-6">
-                <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-4">Profile Info</h4>
-                <div className="space-y-3">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-400">User ID</span>
-                    <span className="text-slate-300 font-mono">{user?.uid.slice(0, 10)}...</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-400">Messages Sent</span>
-                    <span className="text-indigo-400 font-bold">{messages.filter(m => m.userId === user?.uid).length}</span>
-                  </div>
-                </div>
-              </section>
+          ))}
+        </div>
 
-              <div className="text-center p-12 bg-indigo-500/5 rounded-[2rem] border border-indigo-500/10">
-                <Heart className="mx-auto text-indigo-400/30 mb-4" size={48} />
-                <p className="text-sm text-slate-400">Moderation tools have been moved to the private Admin Panel for better security.</p>
+        {/* Chat Input / Timeout UI */}
+        <div className="px-4 pb-6 pt-2">
+          {activeTimeout ? (
+            <div className="bg-[#2b2d31] rounded-lg p-4 border border-yellow-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-3 text-yellow-500">
+                <Clock size={20} />
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold">You are in timeout</span>
+                  <span className="text-[10px] opacity-70">You cannot send messages until your restriction expires.</span>
+                </div>
+              </div>
+              <div className="text-yellow-500 font-mono text-sm font-bold bg-yellow-500/10 px-3 py-1 rounded">
+                {Math.max(0, Math.ceil((activeTimeout - Date.now()) / 1000))}s
               </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Profile Sidebar */}
-      <div className="w-64 bg-[#0a0f1d] border-l border-white/5 p-6 hidden lg:flex flex-col">
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl mx-auto mb-4 flex items-center justify-center text-2xl font-bold shadow-xl">
-            {user?.uid.slice(0, 1).toUpperCase()}
-          </div>
-          <h3 className="font-bold text-slate-100 uppercase tracking-tighter">User {user?.uid.slice(0, 4)}</h3>
-          <p className="text-xs text-green-500 font-medium mt-1 animate-pulse">● Online</p>
+          ) : (
+            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center space-x-4">
+              <Plus size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
+              <input 
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                className="flex-1 bg-transparent outline-none text-[#dbdee1] placeholder-[#6d6f78]"
+                placeholder="Message #general"
+              />
+              <Smile size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
+            </div>
+          )}
         </div>
       </div>
     </div>
