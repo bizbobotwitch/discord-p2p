@@ -77,13 +77,11 @@
             const [showServerModal, setShowServerModal] = useState(false);
             const [newServerInput, setNewServerInput] = useState('');
             
-            // Friends State
             const [friends, setFriends] = useState([]);
             const [friendRequests, setFriendRequests] = useState([]);
-            const [view, setView] = useState('chat'); // 'chat' or 'friends'
+            const [view, setView] = useState('chat');
             const [friendInput, setFriendInput] = useState('');
 
-            // Voice State
             const [isVoiceConnected, setIsVoiceConnected] = useState(false);
             const [voiceParticipants, setVoiceParticipants] = useState([]);
             const [showCallScreen, setShowCallScreen] = useState(false);
@@ -99,7 +97,6 @@
                 return () => window.removeEventListener('firebase-ready', handleReady);
             }, []);
 
-            // Auth Initialization (Rule 3)
             useEffect(() => {
                 if (!fb) return;
                 
@@ -121,7 +118,6 @@
                     setUser(u);
                     if (u) {
                         setStatus('Connected');
-                        // Update global user presence - Fixed path segments
                         fb.setDoc(fb.doc(fb.db, 'artifacts', appId, 'public', 'data', 'userPresence', u.uid), {
                             username: username || 'Anonymous',
                             uid: u.uid,
@@ -132,17 +128,14 @@
                 return () => unsubscribe();
             }, [fb, username]);
 
-            // Data Fetching Logic (Rule 1 & 2)
             useEffect(() => {
                 if (!user || !fb) return;
                 
-                // Friends List: /artifacts/{appId}/users/{userId}/social/socialData (doc) - Correct 6 segments
                 const socialDoc = fb.doc(fb.db, 'artifacts', appId, 'users', user.uid, 'social', 'socialData');
                 const unsubFriends = fb.onSnapshot(socialDoc, (docSnap) => {
                     if (docSnap.exists()) setFriends(docSnap.data().friends || []);
                 }, (err) => console.error("Friends listen err:", err));
 
-                // Requests: /artifacts/{appId}/users/{userId}/requests (collection) - Correct 5 segments
                 const reqCol = fb.collection(fb.db, 'artifacts', appId, 'users', user.uid, 'requests');
                 const unsubReqs = fb.onSnapshot(reqCol, (snap) => {
                     setFriendRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -151,10 +144,10 @@
                 return () => { unsubFriends(); unsubReqs(); };
             }, [user, fb]);
 
-            // Listen for Messages
             useEffect(() => {
                 if (!user || !fb || !currentServerId || view !== 'chat') return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
+                // Rule 1: Always use /artifacts/{appId}/public/data/{collection}
+                const col = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', `messages_${currentServerId}`);
                 const unsubMessages = fb.onSnapshot(col, (snap) => {
                     const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
@@ -162,10 +155,9 @@
                 return () => unsubMessages();
             }, [user, fb, currentServerId, view]);
 
-            // Listen for Voice
             useEffect(() => {
                 if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice');
+                const col = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', `voice_${currentServerId}`);
                 const unsubVoice = fb.onSnapshot(col, (snap) => {
                     setVoiceParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                 }, (err) => console.error("Voice listen err:", err));
@@ -242,7 +234,7 @@
                 if (!inputText.trim() || !user || !fb) return;
                 const text = inputText.trim();
                 setInputText('');
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
+                const col = fb.collection(fb.db, 'artifacts', appId, 'public', 'data', `messages_${currentServerId}`);
                 await fb.addDoc(col, {
                     user: username,
                     userId: user.uid,
@@ -254,14 +246,14 @@
             const toggleVoice = async () => {
                 if (isVoiceConnected) {
                     if (localStream.current) localStream.current.getTracks().forEach(t => t.stop());
-                    await fb.deleteDoc(fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice', user.uid));
+                    await fb.deleteDoc(fb.doc(fb.db, 'artifacts', appId, 'public', 'data', `voice_${currentServerId}`, user.uid));
                     setIsVoiceConnected(false);
                     setShowCallScreen(false);
                 } else {
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                         localStream.current = stream;
-                        await fb.setDoc(fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice', user.uid), {
+                        await fb.setDoc(fb.doc(fb.db, 'artifacts', appId, 'public', 'data', `voice_${currentServerId}`, user.uid), {
                             uid: user.uid,
                             name: username,
                             isMuted: false,
@@ -295,7 +287,6 @@
             return (
                 <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden relative">
                     
-                    {/* Call Overlay */}
                     {showCallScreen && (
                         <div className="fixed inset-0 bg-[#1e1f22] z-[60] flex flex-col scale-in">
                             <div className="flex-1 flex flex-wrap items-center justify-center gap-8 p-10 overflow-y-auto">
@@ -315,7 +306,6 @@
                         </div>
                     )}
 
-                    {/* Sidebar */}
                     <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#2b2d31] flex drawer-transition transform lg:relative lg:translate-x-0 ${isDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                         <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0 overflow-y-auto">
                             <div onClick={() => { setView('friends'); setIsDrawerOpen(false); }} className={`w-12 h-12 rounded-[24px] flex items-center justify-center cursor-pointer transition-all hover:rounded-[16px] relative ${view === 'friends' ? 'bg-[#5865f2] text-white rounded-[16px]' : 'bg-[#313338] hover:bg-[#23a559] hover:text-white'}`}>
@@ -366,7 +356,6 @@
                         </div>
                     </div>
 
-                    {/* Main */}
                     <div className="flex-1 flex flex-col min-w-0 bg-[#313338]">
                         <div className="h-12 border-b border-[#1e1f22] flex items-center px-4">
                             <button onClick={() => setIsDrawerOpen(true)} className="lg:hidden mr-3"><i data-lucide="menu"></i></button>
@@ -430,7 +419,6 @@
                         )}
                     </div>
                     
-                    {/* Server Modal */}
                     {showServerModal && (
                         <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
                             <div className="bg-[#313338] w-full max-w-sm rounded-2xl p-6 border border-white/10 scale-in">
