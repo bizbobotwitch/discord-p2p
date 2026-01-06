@@ -1,474 +1,396 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cloud Chat</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: #313338; 
-            margin: 0; 
-            color: #dbdee1; 
-            overflow: hidden;
-            touch-action: manipulation;
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, query, getDocs, deleteDoc, writeBatch } from 'firebase/firestore';
+import { 
+  Send, Plus, User, ShieldAlert, Clock, 
+  LayoutGrid, MessageSquare, Bell, Search, MoreVertical,
+  Smile, Paperclip, Reply, X, Hash, Settings, Heart, Trash2, AlertTriangle
+} from 'lucide-react';
+
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'chat-v2-soft';
+
+const App = () => {
+  // --- Auth & Safety State ---
+  const [user, setUser] = useState(null);
+  const [isBanned, setIsBanned] = useState(false);
+  const [activeTimeout, setActiveTimeout] = useState(null);
+
+  // --- UI State ---
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState('');
+  const [activeTab, setActiveTab] = useState('messages');
+  const [replyTo, setReplyTo] = useState(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
         }
-        .scale-in { animation: scaleIn 0.2s ease-out; }
-        @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+      } catch (err) {
+        console.error("Auth failed:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const setupListeners = () => {
+      const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
+      const unsubBans = onSnapshot(banRef, (docSnap) => setIsBanned(docSnap.exists()));
+
+      const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
+      const unsubTimeouts = onSnapshot(timeoutRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.expiresAt > Date.now()) setActiveTimeout(data.expiresAt);
+          else setActiveTimeout(null);
+        } else setActiveTimeout(null);
+      });
+
+      const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+      const unsubMsgs = onSnapshot(msgCol, (snap) => {
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setMessages(data.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
+      }, (err) => console.error("Firestore error:", err));
+
+      return () => { unsubBans(); unsubTimeouts(); unsubMsgs(); };
+    };
+
+    const cleanup = setupListeners();
+    return () => cleanup && cleanup();
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeTimeout) return;
+    const interval = setInterval(() => {
+      if (Date.now() >= activeTimeout) setActiveTimeout(null);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeTimeout]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const sendMessage = async () => {
+    if (!inputText.trim() || !user || activeTimeout || isBanned) return;
+    
+    const messageData = {
+      content: inputText,
+      user: `User-${user.uid.slice(0, 4)}`,
+      userId: user.uid,
+      timestamp: serverTimestamp(),
+      color: ['#818cf8', '#f472b6', '#fbbf24', '#34d399'][Math.floor(Math.random() * 4)],
+      replyTo: replyTo ? {
+        user: replyTo.user,
+        content: replyTo.content,
+        id: replyTo.id
+      } : null
+    };
+
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), messageData);
+      setInputText('');
+      setReplyTo(null);
+    } catch (err) {
+      console.error("Failed to send:", err);
+    }
+  };
+
+  const clearAllMessages = async () => {
+    if (!user || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+      const snapshot = await getDocs(msgCol);
+      
+      const batchSize = 500;
+      for (let i = 0; i < snapshot.docs.length; i += batchSize) {
+        const batch = writeBatch(db);
+        snapshot.docs.slice(i, i + batchSize).forEach((msgDoc) => {
+          batch.delete(msgDoc.ref);
+        });
+        await batch.commit();
+      }
+      
+      setShowClearConfirm(false);
+      setActiveTab('messages');
+    } catch (err) {
+      console.error("Failed to clear messages:", err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  if (isBanned) {
+    return (
+      <div className="h-screen w-full bg-[#111827] flex items-center justify-center p-6 text-center">
+        <div className="bg-white/5 backdrop-blur-xl p-10 rounded-3xl border border-red-500/20 shadow-2xl">
+          <ShieldAlert size={64} className="text-red-400 mx-auto mb-6" />
+          <h1 className="text-2xl font-bold text-white mb-2">Account Restricted</h1>
+          <p className="text-slate-400">You have been disconnected from the chat.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen w-full bg-[#0f172a] text-slate-200 font-sans overflow-hidden">
+      {/* Sidebar Nav */}
+      <div className="w-20 flex flex-col items-center py-6 z-10 border-r border-white/5 bg-[#0a0f1d]">
+        <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center text-white mb-8 shadow-lg cursor-pointer hover:rotate-12 transition-all">
+          <MessageSquare size={24} fill="currentColor" />
+        </div>
         
-        .drawer-transition { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        <nav className="flex flex-col space-y-4">
+          <button onClick={() => setActiveTab('messages')} className={`p-3 rounded-xl transition-all ${activeTab === 'messages' ? 'text-white bg-white/10' : 'text-slate-500 hover:text-slate-300'}`}>
+            <Hash size={24} />
+          </button>
+          <button onClick={() => setActiveTab('settings')} className={`p-3 rounded-xl transition-all ${activeTab === 'settings' ? 'text-white bg-white/10' : 'text-slate-500 hover:text-slate-300'}`}>
+            <Settings size={24} />
+          </button>
+        </nav>
+
+        <div className="mt-auto">
+          <div className="w-10 h-10 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center text-xs font-bold">
+            {user?.uid.slice(0, 2).toUpperCase()}
+          </div>
+        </div>
+      </div>
+
+      {/* Main Area */}
+      <div className="flex-1 flex flex-col relative bg-[#0f172a]">
         
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #1e1f22; border-radius: 4px; }
-        
-        .chat-container { height: 100dvh; }
+        {activeTab === 'messages' ? (
+          <>
+            <header className="h-16 px-6 flex items-center justify-between border-b border-white/5 bg-[#0f172a]/80 backdrop-blur-md">
+              <div className="flex items-center space-x-3">
+                <div className="w-8 h-8 bg-indigo-500/10 text-indigo-400 rounded-lg flex items-center justify-center">
+                  <Hash size={18} />
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-100">General Chat</h2>
+                  <p className="text-[11px] text-slate-500 font-medium">Community Lobby</p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                 <div className="bg-white/5 p-2 rounded-lg cursor-pointer hover:bg-white/10 text-slate-400">
+                   <Search size={18} />
+                 </div>
+              </div>
+            </header>
 
-        .voice-active-ring {
-            box-shadow: 0 0 0 2px #23a559;
-            animation: pulse-green 2s infinite;
-        }
-        @keyframes pulse-green {
-            0% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(35, 165, 89, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0); }
-        }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+            {/* Message List */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 custom-scrollbar">
+              {messages.length === 0 && !isDeleting && (
+                <div className="h-full flex flex-col items-center justify-center text-slate-500">
+                  <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
+                    <MessageSquare size={32} />
+                  </div>
+                  <p className="text-sm">No messages yet. Say hi!</p>
+                </div>
+              )}
+              {isDeleting && (
+                <div className="h-full flex flex-col items-center justify-center text-indigo-400 space-y-4">
+                  <Clock className="animate-spin" size={32} />
+                  <p className="text-sm font-medium">Clearing chat history...</p>
+                </div>
+              )}
+              {messages.map((msg, idx) => {
+                const isMe = msg.userId === user?.uid;
+                return (
+                  <div key={msg.id || idx} className={`flex group ${isMe ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`flex max-w-[80%] ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
+                      {!isMe && (
+                        <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: msg.color }}>
+                          {msg.user?.[0]}
+                        </div>
+                      )}
+                      
+                      <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                        {msg.replyTo && (
+                          <div className="mb-1 text-[11px] text-slate-500 flex items-center gap-1 px-2">
+                            <Reply size={12} className="rotate-180" />
+                            <span>Replying to {msg.replyTo.user}</span>
+                          </div>
+                        )}
+                        <div className="relative group/msg">
+                          <div className={`px-4 py-2.5 rounded-2xl text-[14px] leading-relaxed ${
+                            isMe 
+                            ? 'bg-indigo-600 text-white rounded-br-sm' 
+                            : 'bg-slate-800 text-slate-100 rounded-bl-sm'
+                          }`}>
+                            {msg.content}
+                          </div>
+                          <button 
+                            onClick={() => setReplyTo(msg)}
+                            className={`absolute top-1/2 -translate-y-1/2 ${isMe ? '-left-8' : '-right-8'} opacity-0 group-hover/msg:opacity-100 p-1.5 hover:bg-white/10 rounded-full text-slate-500 transition-all`}
+                          >
+                            <Reply size={14} />
+                          </button>
+                        </div>
+                        <div className="mt-1 px-1 flex items-center space-x-2 text-[10px] text-slate-500">
+                          {!isMe && <span className="font-bold text-slate-400">{msg.user}</span>}
+                          <span>{msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
 
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
-            authDomain: "discord2-1ed09.firebaseapp.com",
-            projectId: "discord2-1ed09",
-            storageBucket: "discord2-1ed09.firebasestorage.app",
-            messagingSenderId: "856172729472",
-            appId: "1:856172729472:web:fa00078f5968d3e30a0265"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        window.FirebaseSDK = { 
-            auth, db, defaultAppId: "discord-clone-v2",
-            collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where, getDocs, limit
-        };
-        window.dispatchEvent(new Event('firebase-ready'));
-    </script>
-
-    <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
-
-        const App = () => {
-            const [fb, setFb] = useState(window.FirebaseSDK);
-            const [user, setUser] = useState(null);
-            const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
-            const [currentServerId, setCurrentServerId] = useState(localStorage.getItem('chat-server-id') || 'discord-clone-v2');
-            const [myServers, setMyServers] = useState(JSON.parse(localStorage.getItem('my-servers') || '["discord-clone-v2"]'));
-            const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
+            {/* Input Footer */}
+            <div className="p-4 bg-[#0f172a]">
+              <div className="max-w-4xl mx-auto">
+                {replyTo && (
+                  <div className="bg-slate-800/50 rounded-t-xl px-4 py-2 border-x border-t border-white/5 flex items-center justify-between text-xs text-slate-400">
+                    <div className="flex items-center gap-2 truncate">
+                      <Reply size={12} />
+                      <span>Replying to <b>{replyTo.user}</b></span>
+                      <span className="opacity-60 truncate">"{replyTo.content}"</span>
+                    </div>
+                    <X size={14} className="cursor-pointer hover:text-white" onClick={() => setReplyTo(null)} />
+                  </div>
+                )}
+                
+                <div className={`flex items-center bg-slate-800/80 border border-white/5 px-4 py-2 ${replyTo ? 'rounded-b-2xl' : 'rounded-2xl'} focus-within:border-indigo-500/50 transition-all`}>
+                  <Plus size={20} className="text-slate-500 cursor-pointer hover:text-slate-300 mr-3" />
+                  <input 
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                    placeholder={activeTimeout ? "Wait a moment..." : "Type a message..."}
+                    disabled={activeTimeout || !user || isDeleting}
+                    className="flex-1 bg-transparent py-2 outline-none text-sm text-slate-200 placeholder:text-slate-500"
+                  />
+                  <div className="flex items-center space-x-3 ml-3 text-slate-500">
+                    <Smile size={20} className="cursor-pointer hover:text-slate-300" />
+                    <button 
+                      onClick={sendMessage}
+                      disabled={!inputText.trim() || isDeleting}
+                      className={`p-2 rounded-lg transition-all ${inputText.trim() ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600'}`}
+                    >
+                      <Send size={18} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 p-8 max-w-2xl mx-auto w-full">
+            <h2 className="text-2xl font-bold mb-6">Settings</h2>
             
-            const [messages, setMessages] = useState([]);
-            const [inputText, setInputText] = useState('');
-            const [status, setStatus] = useState('Connecting...');
-            const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-            const [showServerModal, setShowServerModal] = useState(false);
-            const [newServerInput, setNewServerInput] = useState('');
-            
-            // Voice State
-            const [isVoiceConnected, setIsVoiceConnected] = useState(false);
-            const [voiceParticipants, setVoiceParticipants] = useState([]);
-            const [isMuted, setIsMuted] = useState(false);
-            const [showCallScreen, setShowCallScreen] = useState(false);
-            const localStream = useRef(null);
-            const scrollRef = useRef(null);
-
-            useEffect(() => {
-                const handleReady = () => setFb(window.FirebaseSDK);
-                if (!fb) window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
-            }, [fb]);
-
-            useEffect(() => {
-                if (!fb) return;
-                fb.signInAnonymously(fb.auth).catch(() => setStatus('Auth Failed'));
-                return fb.onAuthStateChanged(fb.auth, (u) => {
-                    setUser(u);
-                    if (u) setStatus('Connected');
-                });
-            }, [fb]);
-
-            // Sync Messages for current server
-            useEffect(() => {
-                if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
-                return fb.onSnapshot(col, (snap) => {
-                    const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                    setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-                }, (err) => console.error("Firestore error:", err));
-            }, [user, fb, currentServerId]);
-
-            // Sync Voice Participants
-            useEffect(() => {
-                if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants');
-                return fb.onSnapshot(col, (snap) => {
-                    setVoiceParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                });
-            }, [user, fb, currentServerId]);
-
-            useEffect(() => {
-                if (scrollRef.current) {
-                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                }
-            }, [messages]);
-
-            const saveUsername = () => {
-                if (username.trim()) {
-                    localStorage.setItem('chat-username', username.trim());
-                    setIsUsernameSet(true);
-                }
-            };
-
-            const joinServer = async (id) => {
-                const cleanId = id.trim().toLowerCase().replace(/\s+/g, '-');
-                if (!cleanId || !fb || !user) return;
-
-                if (isVoiceConnected) toggleVoice();
-                
-                // 1. Set Local State
-                setCurrentServerId(cleanId);
-                localStorage.setItem('chat-server-id', cleanId);
-                
-                // 2. Manage Sidebar List
-                if (!myServers.includes(cleanId)) {
-                    const newList = [cleanId, ...myServers].slice(0, 10);
-                    setMyServers(newList);
-                    localStorage.setItem('my-servers', JSON.stringify(newList));
-                }
-
-                // 3. ADMIN PICKUP FIX: Initialize Server in DB if it's empty
-                try {
-                    const msgCol = fb.collection(fb.db, 'artifacts', cleanId, 'public', 'data', 'messages');
-                    const q = fb.query(msgCol, fb.limit(1));
-                    const snapshot = await fb.getDocs(q);
-                    
-                    if (snapshot.empty) {
-                        // First person here! Create a system ping so the Admin Panel detects the path
-                        await fb.addDoc(msgCol, {
-                            user: 'System',
-                            userId: 'system',
-                            content: `Server initialized by ${username}`,
-                            timestamp: fb.serverTimestamp(),
-                            isSystem: true
-                        });
-                    }
-                } catch (e) {
-                    console.error("Initialization check failed:", e);
-                }
-                
-                setShowServerModal(false);
-                setNewServerInput('');
-            };
-
-            const sendMessage = async () => {
-                if (!inputText.trim() || !user || !fb) return;
-                const text = inputText.trim();
-                setInputText('');
-                try {
-                    const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
-                    await fb.addDoc(col, {
-                        user: username,
-                        userId: user.uid,
-                        content: text,
-                        timestamp: fb.serverTimestamp()
-                    });
-                } catch (err) { console.error(err); }
-            };
-
-            const toggleVoice = async () => {
-                if (isVoiceConnected) {
-                    if (localStream.current) {
-                        localStream.current.getTracks().forEach(track => track.stop());
-                    }
-                    const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                    await fb.deleteDoc(participantDoc);
-                    setIsVoiceConnected(false);
-                    setShowCallScreen(false);
-                } else {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        localStream.current = stream;
-                        const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                        await fb.setDoc(participantDoc, {
-                            uid: user.uid,
-                            name: username,
-                            isMuted: false,
-                            joinedAt: Date.now()
-                        });
-                        setIsVoiceConnected(true);
-                        setIsMuted(false);
-                        setShowCallScreen(true);
-                    } catch (err) {
-                        console.error("Mic access denied", err);
-                    }
-                }
-            };
-
-            const toggleMute = () => {
-                if (localStream.current) {
-                    const newValue = !isMuted;
-                    localStream.current.getAudioTracks()[0].enabled = !newValue;
-                    setIsMuted(newValue);
-                    const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                    fb.setDoc(participantDoc, { isMuted: newValue }, { merge: true });
-                }
-            };
-
-            if (!user) return (
-                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22]">
-                    <div className="text-center">
-                        <div className="w-12 h-12 border-4 border-[#5865f2] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                        <p className="text-sm font-medium">{status}</p>
-                    </div>
+            <div className="space-y-6">
+              <section className="bg-white/5 border border-white/5 rounded-2xl p-6">
+                <div className="flex items-center gap-3 mb-4 text-amber-400">
+                  <ShieldAlert size={20} />
+                  <h3 className="font-bold uppercase text-xs tracking-widest">Moderator Tools</h3>
                 </div>
-            );
+                
+                <p className="text-sm text-slate-400 mb-6">
+                  Manage the chat environment. Be careful, these actions cannot be undone.
+                </p>
 
-            if (!isUsernameSet) return (
-                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] p-6">
-                    <div className="bg-[#313338] p-6 rounded-2xl shadow-xl w-full max-w-sm text-center scale-in border border-white/5">
-                        <div className="w-16 h-16 bg-[#5865f2] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                            <i data-lucide="smile" className="w-8 h-8 text-white"></i>
-                        </div>
-                        <h2 className="text-xl font-bold mb-2 text-white">Cloud Chat</h2>
-                        <p className="text-xs text-[#949ba4] mb-6">Pick a name to start chatting.</p>
-                        <input 
-                            value={username} 
-                            onChange={e => setUsername(e.target.value)} 
-                            placeholder="Your nickname..."
-                            className="w-full bg-[#1e1f22] p-3 rounded-xl mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2] text-center" 
-                        />
-                        <button onClick={saveUsername} className="w-full bg-[#5865f2] py-3 rounded-xl font-bold text-white active:scale-95 transition-transform">Enter App</button>
+                {!showClearConfirm ? (
+                  <button 
+                    onClick={() => setShowClearConfirm(true)}
+                    className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-4 py-3 rounded-xl transition-all font-medium text-sm w-full justify-center"
+                  >
+                    <Trash2 size={18} />
+                    Clear All Chat History
+                  </button>
+                ) : (
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 animate-in fade-in zoom-in duration-200">
+                    <div className="flex items-start gap-3 mb-4">
+                      <AlertTriangle className="text-red-400 shrink-0" size={20} />
+                      <div>
+                        <h4 className="text-red-400 font-bold text-sm">Are you absolutely sure?</h4>
+                        <p className="text-xs text-red-300/70 mt-1">This will delete every message in the database for everyone.</p>
+                      </div>
                     </div>
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={clearAllMessages}
+                        disabled={isDeleting}
+                        className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+                      >
+                        {isDeleting ? "Deleting..." : "Yes, Clear All"}
+                      </button>
+                      <button 
+                        onClick={() => setShowClearConfirm(false)}
+                        disabled={isDeleting}
+                        className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <section className="bg-white/5 border border-white/5 rounded-2xl p-6">
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-4">App Info</h4>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400">App ID</span>
+                    <span className="text-slate-300 font-mono">{appId}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400">Total Messages</span>
+                    <span className="text-indigo-400 font-bold">{messages.length}</span>
+                  </div>
                 </div>
-            );
+              </section>
+            </div>
+          </div>
+        )}
+      </div>
 
-            return (
-                <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden relative">
-                    
-                    {/* Call Screen Overlay */}
-                    {showCallScreen && (
-                        <div className="fixed inset-0 bg-[#1e1f22] z-[60] flex flex-col scale-in">
-                            <div className="flex-1 flex flex-wrap items-center justify-center gap-8 p-10 overflow-y-auto">
-                                {voiceParticipants.map(p => (
-                                    <div key={p.uid} className="flex flex-col items-center">
-                                        <div className={`w-32 h-32 rounded-full bg-[#313338] border-4 border-[#1e1f22] flex items-center justify-center text-4xl font-bold text-white uppercase relative ${!p.isMuted ? 'voice-active-ring' : ''}`}>
-                                            {p.name?.[0] || '?'}
-                                            {p.isMuted && (
-                                                <div className="absolute bottom-0 right-0 bg-[#ed4245] p-2 rounded-full border-4 border-[#1e1f22]">
-                                                    <i data-lucide="mic-off" className="w-4 h-4 text-white"></i>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <span className="mt-4 font-bold text-lg text-white">{p.name} {p.uid === user.uid ? '(You)' : ''}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            
-                            <div className="h-24 bg-[#2b2d31] flex items-center justify-center space-x-6 border-t border-white/5 shadow-2xl">
-                                <button onClick={() => setShowCallScreen(false)} className="p-4 rounded-full bg-[#4e5058] hover:bg-[#6d6f78] text-white transition-all active:scale-90">
-                                    <i data-lucide="minimize-2" className="w-6 h-6"></i>
-                                </button>
-                                <button onClick={toggleMute} className={`p-4 rounded-full transition-all active:scale-90 ${isMuted ? 'bg-[#ed4245] text-white' : 'bg-[#4e5058] hover:bg-[#6d6f78] text-white'}`}>
-                                    <i data-lucide={isMuted ? "mic-off" : "mic"} className="w-6 h-6"></i>
-                                </button>
-                                <button onClick={toggleVoice} className="p-4 rounded-full bg-[#ed4245] hover:bg-[#c03537] text-white transition-all active:scale-90">
-                                    <i data-lucide="phone-off" className="w-6 h-6"></i>
-                                </button>
-                            </div>
-                        </div>
-                    )}
+      {/* Right Profile Panel */}
+      <div className="w-64 bg-[#0a0f1d] border-l border-white/5 p-6 hidden lg:flex flex-col">
+        <div className="text-center mb-8">
+          <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl mx-auto mb-4 flex items-center justify-center text-2xl font-bold shadow-xl">
+            {user?.uid.slice(0, 1).toUpperCase()}
+          </div>
+          <h3 className="font-bold text-slate-100">User {user?.uid.slice(0, 4)}</h3>
+          <p className="text-xs text-green-500 font-medium mt-1">● Online</p>
+        </div>
 
-                    {/* Server Modal */}
-                    {showServerModal && (
-                        <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
-                            <div className="bg-[#313338] w-full max-w-sm rounded-2xl p-6 border border-white/10 scale-in">
-                                <h3 className="text-xl font-bold text-white mb-2">Create / Join Server</h3>
-                                <p className="text-xs text-[#949ba4] mb-6">Type a server name. If it exists, you'll join it. If not, it will be created instantly.</p>
-                                <input 
-                                    value={newServerInput}
-                                    onChange={e => setNewServerInput(e.target.value)}
-                                    placeholder="e.g. secret-clubhouse"
-                                    autoFocus
-                                    className="w-full bg-[#1e1f22] p-3 rounded-xl mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2]"
-                                />
-                                <div className="flex space-x-3">
-                                    <button onClick={() => setShowServerModal(false)} className="flex-1 py-3 text-sm font-bold hover:underline">Close</button>
-                                    <button 
-                                        onClick={() => joinServer(newServerInput)} 
-                                        disabled={!newServerInput.trim()}
-                                        className="flex-1 bg-[#23a559] py-3 rounded-xl font-bold text-white shadow-lg active:scale-95 transition-transform disabled:opacity-50"
-                                    >
-                                        Go
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+        <div className="space-y-6">
+          <div className="bg-white/5 rounded-2xl p-4 border border-white/5">
+            <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">Stats</h4>
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs text-slate-400">Sent by You</span>
+              <span className="text-xs font-bold text-indigo-400">{messages.filter(m => m.userId === user?.uid).length}</span>
+            </div>
+          </div>
 
-                    {isDrawerOpen && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setIsDrawerOpen(false)}></div>}
+          <div className="text-center p-4">
+             <Heart size={20} className="mx-auto text-pink-500/50 mb-2" />
+             <p className="text-[10px] text-slate-500 leading-relaxed">Enjoy the clean chat!</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-                    {/* Sidebar */}
-                    <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#2b2d31] flex drawer-transition transform lg:relative lg:translate-x-0 lg:z-0 ${isDrawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}>
-                        {/* Server Icons Sidebar */}
-                        <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0 custom-scrollbar overflow-y-auto">
-                            {myServers.map(srvId => (
-                                <div 
-                                    key={srvId}
-                                    onClick={() => joinServer(srvId)}
-                                    title={srvId}
-                                    className={`w-12 h-12 rounded-[24px] flex items-center justify-center cursor-pointer transition-all hover:rounded-[16px] group relative ${currentServerId === srvId ? 'bg-[#5865f2] text-white rounded-[16px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white'}`}
-                                >
-                                    {currentServerId === srvId && <div className="absolute -left-3 w-2 h-10 bg-white rounded-r-full"></div>}
-                                    <span className="font-bold text-xs uppercase">{srvId.substring(0, 2)}</span>
-                                </div>
-                            ))}
-                            <div className="w-8 h-[2px] bg-white/5 rounded-full"></div>
-                            <div 
-                                onClick={() => setShowServerModal(true)}
-                                className="w-12 h-12 rounded-[24px] bg-[#313338] text-[#23a559] flex items-center justify-center cursor-pointer transition-all hover:rounded-[16px] hover:bg-[#23a559] hover:text-white"
-                            >
-                                <i data-lucide="plus" className="w-6 h-6"></i>
-                            </div>
-                        </div>
-
-                        {/* Channel/Info List */}
-                        <div className="flex-1 flex flex-col min-w-0">
-                            <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm overflow-hidden">
-                                <span className="truncate">{currentServerId}</span>
-                            </div>
-                            
-                            <div className="flex-1 p-3 space-y-4 overflow-y-auto">
-                                <div>
-                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2 flex justify-between items-center">
-                                        <span>Text Channels</span>
-                                    </div>
-                                    <div className="bg-[#3f4147] text-white flex items-center px-3 py-2 rounded-md cursor-pointer">
-                                        <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
-                                        <span className="font-medium text-sm">general</span>
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Voice Channels</div>
-                                    <div 
-                                        onClick={toggleVoice}
-                                        className={`flex items-center px-3 py-2 rounded-md cursor-pointer transition-colors ${isVoiceConnected ? 'bg-[#3f4147] text-white font-bold' : 'text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]'}`}
-                                    >
-                                        <i data-lucide="volume-2" className="w-4 h-4 mr-2 opacity-50"></i>
-                                        <span className="text-sm">General Voice</span>
-                                    </div>
-                                    
-                                    <div className="mt-2 ml-4 space-y-2">
-                                        {voiceParticipants.map(p => (
-                                            <div key={p.uid} className="flex items-center space-x-2">
-                                                <div className={`w-6 h-6 rounded-full bg-[#5865f2] flex items-center justify-center text-[10px] font-bold text-white uppercase ${!p.isMuted && isVoiceConnected ? 'ring-2 ring-[#23a559]' : ''}`}>
-                                                    {p.name?.[0] || '?'}
-                                                </div>
-                                                <span className="text-xs text-[#dbdee1] font-medium truncate flex-1">{p.name}</span>
-                                                {p.isMuted && <i data-lucide="mic-off" className="w-3 h-3 text-red-400"></i>}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="bg-[#232428] p-3 flex items-center space-x-3 mt-auto">
-                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase">{username?.[0] || '?'}</div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-white text-xs font-bold truncate">{username}</div>
-                                    <div className="text-[10px] text-[#949ba4] font-medium">Online</div>
-                                </div>
-                                <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="p-2 hover:bg-white/5 rounded-lg">
-                                    <i data-lucide="log-out" className="w-4 h-4 text-[#b5bac1]"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Main Chat */}
-                    <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
-                        <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm flex-shrink-0">
-                            <button onClick={() => setIsDrawerOpen(true)} className="mr-3 p-1 lg:hidden">
-                                <i data-lucide="menu" className="w-6 h-6"></i>
-                            </button>
-                            <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
-                            <span className="font-bold text-white text-sm">general</span>
-                            <div className="flex-1"></div>
-                            <div className="text-[10px] font-bold text-[#b5bac1] bg-[#1e1f22] px-2 py-1 rounded-md">ID: {currentServerId}</div>
-                        </div>
-                        
-                        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {messages.length === 0 && (
-                                <div className="flex flex-col items-center justify-center h-full text-center opacity-30">
-                                    <i data-lucide="message-square" className="w-12 h-12 mb-2"></i>
-                                    <p className="text-sm font-bold tracking-wide uppercase">New Server: {currentServerId}</p>
-                                    <p className="text-xs">Tell a friend the ID above to let them in.</p>
-                                </div>
-                            )}
-                            {messages.map(m => (
-                                <div key={m.id} className={`flex items-start space-x-3 ${m.isSystem ? 'opacity-40 italic' : ''}`}>
-                                    {!m.isSystem && (
-                                        <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
-                                    )}
-                                    <div className="min-w-0">
-                                        <div className="flex items-baseline space-x-2">
-                                            <span className="font-bold text-white text-[15px]">{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">
-                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
-                                            </span>
-                                        </div>
-                                        <p className={`text-[15px] text-[#dbdee1] break-words ${m.isSystem ? 'text-xs' : ''}`}>{m.content}</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-
-                        <div className="px-4 pb-6 lg:pb-8 pt-2">
-                            <div className="bg-[#383a40] rounded-xl px-4 py-1 flex items-center">
-                                <input 
-                                    className="flex-1 bg-transparent outline-none text-[15px] text-[#dbdee1] placeholder-[#949ba4] py-2" 
-                                    placeholder={`Message #general in ${currentServerId}`} 
-                                    value={inputText} 
-                                    onChange={e => setInputText(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                                />
-                                <button onClick={sendMessage} className={`p-2 ml-2 ${inputText.trim() ? 'text-[#5865f2]' : 'text-[#b5bac1] opacity-50'}`}>
-                                    <i data-lucide="send" className="w-5 h-5"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-        setInterval(() => window.lucide && window.lucide.createIcons(), 500);
-    </script>
-</body>
-</html>
+export default App;
