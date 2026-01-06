@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, query, getDocs, deleteDoc, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { 
-  Send, Plus, User, ShieldAlert, Clock, 
-  LayoutGrid, MessageSquare, Bell, Search, MoreVertical,
-  Smile, Paperclip, Reply, X, Hash, Settings, Heart, Trash2, AlertTriangle
+  Send, Plus, MessageSquare, Search, 
+  Smile, Reply, X, Hash, Settings, Heart, ShieldAlert
 } from 'lucide-react';
 
+// Initialize Firebase using the provided configuration
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -15,20 +15,17 @@ const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'chat-v2-soft';
 
 const App = () => {
-  // --- Auth & Safety State ---
+  // --- State Management ---
   const [user, setUser] = useState(null);
   const [isBanned, setIsBanned] = useState(false);
   const [activeTimeout, setActiveTimeout] = useState(null);
-
-  // --- UI State ---
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [activeTab, setActiveTab] = useState('messages');
   const [replyTo, setReplyTo] = useState(null);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
   const messagesEndRef = useRef(null);
 
+  // --- Authentication ---
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -46,35 +43,40 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
+  // --- Real-time Data Listeners ---
   useEffect(() => {
     if (!user) return;
 
-    const setupListeners = () => {
-      const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
-      const unsubBans = onSnapshot(banRef, (docSnap) => setIsBanned(docSnap.exists()));
+    // Safety check for bans
+    const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
+    const unsubBans = onSnapshot(banRef, (docSnap) => setIsBanned(docSnap.exists()));
 
-      const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
-      const unsubTimeouts = onSnapshot(timeoutRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (data.expiresAt > Date.now()) setActiveTimeout(data.expiresAt);
-          else setActiveTimeout(null);
-        } else setActiveTimeout(null);
-      });
+    // Safety check for timeouts
+    const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
+    const unsubTimeouts = onSnapshot(timeoutRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.expiresAt > Date.now()) setActiveTimeout(data.expiresAt);
+        else setActiveTimeout(null);
+      } else setActiveTimeout(null);
+    });
 
-      const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-      const unsubMsgs = onSnapshot(msgCol, (snap) => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setMessages(data.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-      }, (err) => console.error("Firestore error:", err));
+    // Listen for messages
+    const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+    const unsubMsgs = onSnapshot(msgCol, (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Sort messages by timestamp
+      setMessages(data.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
+    }, (err) => console.error("Firestore error:", err));
 
-      return () => { unsubBans(); unsubTimeouts(); unsubMsgs(); };
+    return () => {
+      unsubBans();
+      unsubTimeouts();
+      unsubMsgs();
     };
-
-    const cleanup = setupListeners();
-    return () => cleanup && cleanup();
   }, [user]);
 
+  // Handle timeout countdowns
   useEffect(() => {
     if (!activeTimeout) return;
     const interval = setInterval(() => {
@@ -83,10 +85,12 @@ const App = () => {
     return () => clearInterval(interval);
   }, [activeTimeout]);
 
+  // Auto-scroll to bottom on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // --- Actions ---
   const sendMessage = async () => {
     if (!inputText.trim() || !user || activeTimeout || isBanned) return;
     
@@ -112,31 +116,6 @@ const App = () => {
     }
   };
 
-  const clearAllMessages = async () => {
-    if (!user || isDeleting) return;
-    setIsDeleting(true);
-    try {
-      const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-      const snapshot = await getDocs(msgCol);
-      
-      const batchSize = 500;
-      for (let i = 0; i < snapshot.docs.length; i += batchSize) {
-        const batch = writeBatch(db);
-        snapshot.docs.slice(i, i + batchSize).forEach((msgDoc) => {
-          batch.delete(msgDoc.ref);
-        });
-        await batch.commit();
-      }
-      
-      setShowClearConfirm(false);
-      setActiveTab('messages');
-    } catch (err) {
-      console.error("Failed to clear messages:", err);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   if (isBanned) {
     return (
       <div className="h-screen w-full bg-[#111827] flex items-center justify-center p-6 text-center">
@@ -151,7 +130,7 @@ const App = () => {
 
   return (
     <div className="flex h-screen w-full bg-[#0f172a] text-slate-200 font-sans overflow-hidden">
-      {/* Sidebar Nav */}
+      {/* Navigation Sidebar */}
       <div className="w-20 flex flex-col items-center py-6 z-10 border-r border-white/5 bg-[#0a0f1d]">
         <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center text-white mb-8 shadow-lg cursor-pointer hover:rotate-12 transition-all">
           <MessageSquare size={24} fill="currentColor" />
@@ -173,9 +152,8 @@ const App = () => {
         </div>
       </div>
 
-      {/* Main Area */}
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col relative bg-[#0f172a]">
-        
         {activeTab === 'messages' ? (
           <>
             <header className="h-16 px-6 flex items-center justify-between border-b border-white/5 bg-[#0f172a]/80 backdrop-blur-md">
@@ -188,33 +166,25 @@ const App = () => {
                   <p className="text-[11px] text-slate-500 font-medium">Community Lobby</p>
                 </div>
               </div>
-              <div className="flex items-center space-x-2">
-                 <div className="bg-white/5 p-2 rounded-lg cursor-pointer hover:bg-white/10 text-slate-400">
-                   <Search size={18} />
-                 </div>
+              <div className="bg-white/5 p-2 rounded-lg cursor-pointer hover:bg-white/10 text-slate-400">
+                <Search size={18} />
               </div>
             </header>
 
-            {/* Message List */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 custom-scrollbar">
-              {messages.length === 0 && !isDeleting && (
+            {/* Message Feed */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              {messages.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-slate-500">
                   <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
                     <MessageSquare size={32} />
                   </div>
-                  <p className="text-sm">No messages yet. Say hi!</p>
+                  <p className="text-sm">No messages yet. Start the conversation!</p>
                 </div>
               )}
-              {isDeleting && (
-                <div className="h-full flex flex-col items-center justify-center text-indigo-400 space-y-4">
-                  <Clock className="animate-spin" size={32} />
-                  <p className="text-sm font-medium">Clearing chat history...</p>
-                </div>
-              )}
-              {messages.map((msg, idx) => {
+              {messages.map((msg) => {
                 const isMe = msg.userId === user?.uid;
                 return (
-                  <div key={msg.id || idx} className={`flex group ${isMe ? 'justify-end' : 'justify-start'}`}>
+                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
                     <div className={`flex max-w-[80%] ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
                       {!isMe && (
                         <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: msg.color }}>
@@ -229,17 +199,15 @@ const App = () => {
                             <span>Replying to {msg.replyTo.user}</span>
                           </div>
                         )}
-                        <div className="relative group/msg">
+                        <div className="relative group">
                           <div className={`px-4 py-2.5 rounded-2xl text-[14px] leading-relaxed ${
-                            isMe 
-                            ? 'bg-indigo-600 text-white rounded-br-sm' 
-                            : 'bg-slate-800 text-slate-100 rounded-bl-sm'
+                            isMe ? 'bg-indigo-600 text-white rounded-br-sm' : 'bg-slate-800 text-slate-100 rounded-bl-sm'
                           }`}>
                             {msg.content}
                           </div>
                           <button 
                             onClick={() => setReplyTo(msg)}
-                            className={`absolute top-1/2 -translate-y-1/2 ${isMe ? '-left-8' : '-right-8'} opacity-0 group-hover/msg:opacity-100 p-1.5 hover:bg-white/10 rounded-full text-slate-500 transition-all`}
+                            className={`absolute top-1/2 -translate-y-1/2 ${isMe ? '-left-8' : '-right-8'} opacity-0 group-hover:opacity-100 p-1.5 hover:bg-white/10 rounded-full text-slate-500 transition-all`}
                           >
                             <Reply size={14} />
                           </button>
@@ -256,7 +224,7 @@ const App = () => {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Footer */}
+            {/* Input Component */}
             <div className="p-4 bg-[#0f172a]">
               <div className="max-w-4xl mx-auto">
                 {replyTo && (
@@ -264,7 +232,6 @@ const App = () => {
                     <div className="flex items-center gap-2 truncate">
                       <Reply size={12} />
                       <span>Replying to <b>{replyTo.user}</b></span>
-                      <span className="opacity-60 truncate">"{replyTo.content}"</span>
                     </div>
                     <X size={14} className="cursor-pointer hover:text-white" onClick={() => setReplyTo(null)} />
                   </div>
@@ -276,15 +243,15 @@ const App = () => {
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                    placeholder={activeTimeout ? "Wait a moment..." : "Type a message..."}
-                    disabled={activeTimeout || !user || isDeleting}
+                    placeholder={activeTimeout ? "Wait for timeout..." : "Type a message..."}
+                    disabled={!!activeTimeout || !user}
                     className="flex-1 bg-transparent py-2 outline-none text-sm text-slate-200 placeholder:text-slate-500"
                   />
                   <div className="flex items-center space-x-3 ml-3 text-slate-500">
                     <Smile size={20} className="cursor-pointer hover:text-slate-300" />
                     <button 
                       onClick={sendMessage}
-                      disabled={!inputText.trim() || isDeleting}
+                      disabled={!inputText.trim()}
                       className={`p-2 rounded-lg transition-all ${inputText.trim() ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600'}`}
                     >
                       <Send size={18} />
@@ -297,96 +264,38 @@ const App = () => {
         ) : (
           <div className="flex-1 p-8 max-w-2xl mx-auto w-full">
             <h2 className="text-2xl font-bold mb-6">Settings</h2>
-            
             <div className="space-y-6">
               <section className="bg-white/5 border border-white/5 rounded-2xl p-6">
-                <div className="flex items-center gap-3 mb-4 text-amber-400">
-                  <ShieldAlert size={20} />
-                  <h3 className="font-bold uppercase text-xs tracking-widest">Moderator Tools</h3>
-                </div>
-                
-                <p className="text-sm text-slate-400 mb-6">
-                  Manage the chat environment. Be careful, these actions cannot be undone.
-                </p>
-
-                {!showClearConfirm ? (
-                  <button 
-                    onClick={() => setShowClearConfirm(true)}
-                    className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-4 py-3 rounded-xl transition-all font-medium text-sm w-full justify-center"
-                  >
-                    <Trash2 size={18} />
-                    Clear All Chat History
-                  </button>
-                ) : (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 animate-in fade-in zoom-in duration-200">
-                    <div className="flex items-start gap-3 mb-4">
-                      <AlertTriangle className="text-red-400 shrink-0" size={20} />
-                      <div>
-                        <h4 className="text-red-400 font-bold text-sm">Are you absolutely sure?</h4>
-                        <p className="text-xs text-red-300/70 mt-1">This will delete every message in the database for everyone.</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-3">
-                      <button 
-                        onClick={clearAllMessages}
-                        disabled={isDeleting}
-                        className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
-                      >
-                        {isDeleting ? "Deleting..." : "Yes, Clear All"}
-                      </button>
-                      <button 
-                        onClick={() => setShowClearConfirm(false)}
-                        disabled={isDeleting}
-                        className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </section>
-
-              <section className="bg-white/5 border border-white/5 rounded-2xl p-6">
-                <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-4">App Info</h4>
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-4">Profile Info</h4>
                 <div className="space-y-3">
                   <div className="flex justify-between text-xs">
-                    <span className="text-slate-400">App ID</span>
-                    <span className="text-slate-300 font-mono">{appId}</span>
+                    <span className="text-slate-400">User ID</span>
+                    <span className="text-slate-300 font-mono">{user?.uid.slice(0, 10)}...</span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-slate-400">Total Messages</span>
-                    <span className="text-indigo-400 font-bold">{messages.length}</span>
+                    <span className="text-slate-400">Messages Sent</span>
+                    <span className="text-indigo-400 font-bold">{messages.filter(m => m.userId === user?.uid).length}</span>
                   </div>
                 </div>
               </section>
+
+              <div className="text-center p-12 bg-indigo-500/5 rounded-[2rem] border border-indigo-500/10">
+                <Heart className="mx-auto text-indigo-400/30 mb-4" size={48} />
+                <p className="text-sm text-slate-400">Moderation tools have been moved to the private Admin Panel for better security.</p>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Right Profile Panel */}
+      {/* Profile Sidebar */}
       <div className="w-64 bg-[#0a0f1d] border-l border-white/5 p-6 hidden lg:flex flex-col">
         <div className="text-center mb-8">
           <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl mx-auto mb-4 flex items-center justify-center text-2xl font-bold shadow-xl">
             {user?.uid.slice(0, 1).toUpperCase()}
           </div>
-          <h3 className="font-bold text-slate-100">User {user?.uid.slice(0, 4)}</h3>
-          <p className="text-xs text-green-500 font-medium mt-1">● Online</p>
-        </div>
-
-        <div className="space-y-6">
-          <div className="bg-white/5 rounded-2xl p-4 border border-white/5">
-            <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">Stats</h4>
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-xs text-slate-400">Sent by You</span>
-              <span className="text-xs font-bold text-indigo-400">{messages.filter(m => m.userId === user?.uid).length}</span>
-            </div>
-          </div>
-
-          <div className="text-center p-4">
-             <Heart size={20} className="mx-auto text-pink-500/50 mb-2" />
-             <p className="text-[10px] text-slate-500 leading-relaxed">Enjoy the clean chat!</p>
-          </div>
+          <h3 className="font-bold text-slate-100 uppercase tracking-tighter">User {user?.uid.slice(0, 4)}</h3>
+          <p className="text-xs text-green-500 font-medium mt-1 animate-pulse">● Online</p>
         </div>
       </div>
     </div>
