@@ -46,7 +46,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = JSON.parse(__firebase_config);
@@ -57,8 +57,9 @@
         window.FirebaseSDK = { 
             auth, db, 
             appId: typeof __app_id !== 'undefined' ? __app_id : 'discord-clone-v2',
+            initialToken: typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null,
             collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where, getDocs, limit
+            signInAnonymously, signInWithCustomToken, onAuthStateChanged, doc, setDoc, deleteDoc, query, where, getDocs, limit
         };
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -88,7 +89,7 @@
             const localStream = useRef(null);
             const scrollRef = useRef(null);
 
-            // 1. Initial Auth Logic
+            // 1. Initial Auth Logic (MANDATORY RULE 3)
             useEffect(() => {
                 const handleReady = () => setFb(window.FirebaseSDK);
                 if (!fb) {
@@ -98,8 +99,11 @@
 
                 const initAuth = async () => {
                     try {
-                        // Always authenticate first
-                        await fb.signInAnonymously(fb.auth);
+                        if (fb.initialToken) {
+                            await fb.signInWithCustomToken(fb.auth, fb.initialToken);
+                        } else {
+                            await fb.signInAnonymously(fb.auth);
+                        }
                     } catch (err) {
                         console.error("Auth error:", err);
                         setStatus('Auth Failed');
@@ -114,17 +118,19 @@
                 return () => unsubscribe();
             }, [fb]);
 
-            // 2. Fetch Messages (Guarded by user)
+            // 2. Fetch Messages (Guarded by user and Strict Paths - MANDATORY RULE 1 & 3)
             useEffect(() => {
                 if (!user || !fb || !currentServerId) return;
                 
-                // Path strictly follows: /artifacts/{appId}/public/data/{collectionName}
-                // We use 'currentServerId' as the collection to separate server chats
-                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', `messages_${currentServerId}`);
+                // Using a flat structure within the allowed public path
+                // Paths MUST be: /artifacts/{appId}/public/data/{collectionName}
+                const collectionName = `messages_${currentServerId}`;
+                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', collectionName);
                 
                 const unsubscribe = fb.onSnapshot(col, 
                     (snap) => {
                         const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        // Sort in memory (MANDATORY RULE 2)
                         setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
                     },
                     (error) => console.error("Snapshot error:", error)
@@ -132,10 +138,11 @@
                 return () => unsubscribe();
             }, [user, fb, currentServerId]);
 
-            // 3. Fetch Voice Participants (Guarded by user)
+            // 3. Fetch Voice Participants (MANDATORY RULE 1 & 3)
             useEffect(() => {
                 if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', `voice_${currentServerId}`);
+                const collectionName = `voice_${currentServerId}`;
+                const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', collectionName);
                 
                 const unsubscribe = fb.onSnapshot(col, 
                     (snap) => {
@@ -181,7 +188,8 @@
                 setInputText('');
                 
                 try {
-                    const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', `messages_${currentServerId}`);
+                    const collectionName = `messages_${currentServerId}`;
+                    const col = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', collectionName);
                     await fb.addDoc(col, {
                         user: username,
                         userId: user.uid,
@@ -195,7 +203,8 @@
 
             const toggleVoice = async () => {
                 if (!user || !fb) return;
-                const voiceDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', `voice_${currentServerId}`, user.uid);
+                const collectionName = `voice_${currentServerId}`;
+                const voiceDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', collectionName, user.uid);
                 
                 if (isVoiceConnected) {
                     if (localStream.current) localStream.current.getTracks().forEach(t => t.stop());
@@ -221,7 +230,8 @@
                     const v = !isMuted;
                     localStream.current.getAudioTracks()[0].enabled = !v;
                     setIsMuted(v);
-                    const voiceDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', `voice_${currentServerId}`, user.uid);
+                    const collectionName = `voice_${currentServerId}`;
+                    const voiceDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', collectionName, user.uid);
                     fb.setDoc(voiceDoc, { isMuted: v }, { merge: true });
                 }
             };
