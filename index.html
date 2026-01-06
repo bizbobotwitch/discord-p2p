@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, setDoc, getDoc, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, query } from 'firebase/firestore';
 import { 
-  Hash, Settings, Send, Plus, 
-  User, Check, Search, ShieldAlert, Clock,
-  Users, MessageCircle, Globe, UserPlus, LogOut,
-  Sparkles, AtSign, ShieldCheck, Eye, Lock
+  Hash, Settings, Mic, MicOff, Video, VideoOff, Phone, Send, Plus, 
+  Compass, User, Check, Link as LinkIcon, Github, Smile, Gift, 
+  Sticker, Search, ShieldAlert, Clock
 } from 'lucide-react';
 
 const firebaseConfig = JSON.parse(__firebase_config);
@@ -16,342 +15,199 @@ const db = getFirestore(app);
 const appId = "discord-clone-v2";
 
 const App = () => {
-  // --- Styling Fix: Inject Tailwind ---
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.tailwindcss.com';
-    document.head.appendChild(script);
-    document.body.style.backgroundColor = '#1e1f22';
-  }, []);
-
-  // --- Auth & Profile State ---
+  // --- Auth & Safety State ---
   const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
   const [isBanned, setIsBanned] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(true); // You are the admin
+  const [activeTimeout, setActiveTimeout] = useState(null);
 
   // --- UI State ---
-  const [activeView, setActiveView] = useState('chat'); 
-  const [currentServer, setCurrentServer] = useState('Global Lobby');
+  const [activeChannel, setActiveChannel] = useState('general');
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [showAdminView, setShowAdminView] = useState(false);
-  
-  // --- Social State ---
-  const [friends, setFriends] = useState([]);
-  const [friendInput, setFriendInput] = useState('');
-  const [serverJoinInput, setServerJoinInput] = useState('');
-  const [joinedServers, setJoinedServers] = useState(['Global Lobby']);
-  const [allPublicServers, setAllPublicServers] = useState([]);
+  const [isCalling, setIsCalling] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [showConnectModal, setShowConnectModal] = useState(false);
 
-  // --- Firebase Auth & Initialization ---
+  // --- Firebase Auth & Safety Guard ---
   useEffect(() => {
     const initAuth = async () => {
       await signInAnonymously(auth);
     };
     initAuth();
-    return onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        setUser(u);
-        const profRef = doc(db, 'artifacts', appId, 'users', u.uid, 'profile', 'data');
-        const profSnap = await getDoc(profRef);
-        if (!profSnap.exists()) {
-          const newProf = { uid: u.uid, username: `Explorer-${u.uid.slice(0, 4)}`, status: 'Online' };
-          await setDoc(profRef, newProf);
-          setProfile(newProf);
-        } else {
-          setProfile(profSnap.data());
-        }
-      }
-    });
+    return onAuthStateChanged(auth, (u) => setUser(u));
   }, []);
 
-  // --- Real-time Listeners ---
   useEffect(() => {
     if (!user) return;
 
-    // Listen for Global Server Registry (For Admin/Discovery)
-    const registryCol = collection(db, 'artifacts', appId, 'public', 'serverRegistry');
-    const unsubRegistry = onSnapshot(registryCol, (snap) => {
-      setAllPublicServers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    // Listen for Bans
+    const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
+    const unsubBans = onSnapshot(banRef, (doc) => {
+      setIsBanned(doc.exists());
     });
 
-    const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
-    const unsubBans = onSnapshot(banRef, (doc) => setIsBanned(doc.exists()));
+    // Listen for Timeouts
+    const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
+    const unsubTimeouts = onSnapshot(timeoutRef, (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        if (data.expiresAt > Date.now()) {
+          setActiveTimeout(data.expiresAt);
+        } else {
+          setActiveTimeout(null);
+        }
+      } else {
+        setActiveTimeout(null);
+      }
+    });
 
-    const serverSafeId = currentServer.replace(/\s+/g, '-').toLowerCase();
-    const msgCol = collection(db, 'artifacts', appId, 'public', 'data', `messages-${serverSafeId}`);
+    // Listen for Global Messages
+    const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const unsubMsgs = onSnapshot(msgCol, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setMessages(data.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
     });
 
-    const friendsCol = collection(db, 'artifacts', appId, 'users', user.uid, 'friends');
-    const unsubFriends = onSnapshot(friendsCol, (snap) => {
-      setFriends(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    return () => { unsubBans(); unsubTimeouts(); unsubMsgs(); };
+  }, [user]);
 
-    return () => { unsubBans(); unsubMsgs(); unsubFriends(); unsubRegistry(); };
-  }, [user, currentServer]);
+  // Check timeout expiration every second
+  useEffect(() => {
+    if (!activeTimeout) return;
+    const interval = setInterval(() => {
+      if (Date.now() >= activeTimeout) setActiveTimeout(null);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeTimeout]);
 
   const sendMessage = async () => {
-    if (!inputText.trim() || !user || isBanned) return;
-    const serverSafeId = currentServer.replace(/\s+/g, '-').toLowerCase();
+    if (!inputText.trim() || !user || activeTimeout || isBanned) return;
+    
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `messages-${serverSafeId}`), {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
         content: inputText,
-        user: profile?.username || `User-${user.uid.slice(0, 4)}`,
+        user: `User-${user.uid.slice(0, 4)}`,
         userId: user.uid,
         timestamp: serverTimestamp()
       });
       setInputText('');
-    } catch (err) { console.error(err); }
-  };
-
-  const createOrJoinServer = async () => {
-    if (!serverJoinInput.trim()) return;
-    const sName = serverJoinInput.trim();
-    
-    // Register the server in the public registry so Admin can see it
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'serverRegistry', sName.toLowerCase()), {
-      name: sName,
-      createdBy: user.uid,
-      createdAt: Date.now(),
-      isPrivate: false // All user-made servers are listed for Admin
-    });
-
-    if (!joinedServers.includes(sName)) {
-      setJoinedServers([...joinedServers, sName]);
+    } catch (err) {
+      console.error("Failed to send:", err);
     }
-    setCurrentServer(sName);
-    setServerJoinInput('');
-    setActiveView('chat');
   };
 
-  const addFriend = async () => {
-    if (!friendInput.trim() || !user) return;
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'friends', friendInput), {
-      username: `User-${friendInput.slice(0, 4)}`,
-      status: 'Online'
-    });
-    setFriendInput('');
-  };
-
-  if (isBanned) return <div className="h-screen bg-[#1e1f22] flex items-center justify-center text-white">Access Denied</div>;
+  if (isBanned) {
+    return (
+      <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-center">
+        <div className="max-w-md">
+          <ShieldAlert size={64} className="text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-white mb-2">Access Denied</h1>
+          <p className="text-[#949ba4]">Your account has been permanently banned from this server for violating community guidelines.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full bg-[#313338] text-[#dbdee1] font-sans overflow-hidden antialiased">
-      
-      {/* Sidebar: Server Navigation */}
+      {/* Sidebar: Servers */}
       <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
-        <div 
-          onClick={() => setActiveView('friends')}
-          className={`w-12 h-12 rounded-[24px] flex items-center justify-center transition-all cursor-pointer ${
-            activeView === 'friends' ? 'bg-[#5865f2] text-white rounded-[16px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white hover:rounded-[16px]'
-          }`}
-        >
-          <Users size={24} />
+        <div className="w-12 h-12 bg-[#5865f2] rounded-[16px] flex items-center justify-center text-white cursor-pointer hover:rounded-[12px] transition-all">
+          <Github size={28} />
         </div>
-        
-        <div className="w-8 h-[2px] bg-[#35363c] rounded-full mx-auto my-1" />
-
-        {joinedServers.map((srv) => (
-          <div 
-            key={srv}
-            onClick={() => { setCurrentServer(srv); setActiveView('chat'); }}
-            className={`w-12 h-12 flex items-center justify-center text-xs font-bold transition-all cursor-pointer relative group ${
-              currentServer === srv && activeView === 'chat' 
-                ? 'bg-[#5865f2] text-white rounded-[16px]' 
-                : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white hover:rounded-[16px] rounded-[24px]'
-            }`}
-          >
-            {srv.slice(0, 2).toUpperCase()}
-            {currentServer === srv && activeView === 'chat' && <div className="absolute -left-3 w-2 h-10 bg-white rounded-r-full" />}
-          </div>
-        ))}
-
-        <div 
-          onClick={() => setActiveView('servers')}
-          className="w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-[#23a559] hover:bg-[#23a559] hover:text-white hover:rounded-[16px] transition-all cursor-pointer"
-        >
+        <div className="w-8 h-[2px] bg-[#35363c] rounded-full mx-auto" />
+        <div className="w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-[#23a559] hover:bg-[#23a559] hover:text-white hover:rounded-[16px] transition-all cursor-pointer">
           <Plus size={24} />
         </div>
       </div>
 
-      {/* Sidebar: Channel Browser */}
+      {/* Sidebar: Channels */}
       <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 border-r border-black/20">
-        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm overflow-hidden truncate">
-          {activeView === 'friends' ? 'Social Hub' : currentServer}
+        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm">
+          Community Chat
+        </div>
+        <div className="flex-1 overflow-y-auto py-4 px-2">
+          <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Text Channels</div>
+          <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md cursor-pointer">
+            <Hash size={20} className="mr-1.5 opacity-50" />
+            <span className="font-medium text-[15px]">general</span>
+          </div>
         </div>
         
-        <div className="flex-1 overflow-y-auto py-4 px-2 space-y-1">
-          {activeView === 'chat' ? (
-            <>
-              <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Text Channels</div>
-              <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md cursor-pointer">
-                <Hash size={20} className="mr-1.5 opacity-50" />
-                <span className="font-medium text-[15px]">general</span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div onClick={() => setActiveView('friends')} className={`flex items-center space-x-3 px-2 py-2 rounded-md cursor-pointer transition-colors ${activeView === 'friends' ? 'bg-[#3f4147] text-white' : 'hover:bg-[#35373c]'}`}>
-                <Users size={20} />
-                <span className="font-medium">Friends</span>
-              </div>
-              <div className="flex items-center space-x-3 px-2 py-2 rounded-md cursor-pointer hover:bg-[#35373c]">
-                <Sparkles size={20} />
-                <span className="font-medium">Nitro</span>
-              </div>
-            </>
-          )}
-        </div>
-        
+        {/* User Footer */}
         <div className="bg-[#232428] p-2 flex items-center space-x-2">
           <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-[10px] font-bold">
-            {profile?.username?.[0] || '?'}
+            {user ? user.uid.slice(0, 2).toUpperCase() : '??'}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-white text-xs font-bold truncate">{profile?.username}</div>
-            <div className="text-[#949ba4] text-[10px]">Online</div>
+            <div className="text-white text-xs font-bold truncate">User-{user?.uid.slice(0,4)}</div>
+            <div className="text-[#949ba4] text-[10px] truncate">Online</div>
           </div>
-          <div onClick={() => setActiveView('settings')} className="p-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
-            <Settings size={16} className="text-[#b5bac1]" />
-          </div>
+          <Settings size={16} className="text-[#b5bac1] cursor-pointer" />
         </div>
       </div>
 
-      {/* Main Content */}
+      {/* Main Chat Area */}
       <div className="flex-1 flex flex-col bg-[#313338] min-w-0">
-        {activeView === 'chat' && (
-          <>
-            <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] shadow-sm justify-between">
-              <div className="flex items-center">
-                <Hash size={24} className="text-[#80848e] mr-2" />
-                <span className="font-bold text-white text-sm">general</span>
+        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] shadow-sm">
+          <Hash size={24} className="text-[#80848e] mr-2" />
+          <span className="font-bold text-white uppercase tracking-wide text-sm">general</span>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-reverse space-y-4">
+          {messages.map((msg) => (
+            <div key={msg.id} className="flex items-start space-x-4 group px-2 py-1 hover:bg-[#2e3035] rounded-lg transition-colors">
+              <div className="w-10 h-10 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold">
+                {msg.user[0]}
+              </div>
+              <div>
+                <div className="flex items-baseline space-x-2">
+                  <span className="font-bold text-white">{msg.user}</span>
+                  <span className="text-[#949ba4] text-[10px]">
+                    {msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString() : 'Sending...'}
+                  </span>
+                </div>
+                <div className="text-[#dbdee1] leading-relaxed">{msg.content}</div>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-reverse space-y-4">
-              {messages.map((msg) => (
-                <div key={msg.id} className="flex items-start space-x-4 group px-2 py-1 hover:bg-[#2e3035] rounded-lg">
-                  <div className="w-10 h-10 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold flex-shrink-0">{msg.user[0]}</div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline space-x-2">
-                      <span className="font-bold text-white">{msg.user}</span>
-                      <span className="text-[#949ba4] text-[10px]">{msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString() : '...'}</span>
-                    </div>
-                    <div className="text-[#dbdee1] leading-relaxed break-words">{msg.content}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="px-4 pb-6 pt-2">
-              <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center space-x-4">
-                <Plus size={20} className="text-[#b5bac1] cursor-pointer" />
-                <input 
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                  className="flex-1 bg-transparent outline-none text-[#dbdee1]"
-                  placeholder={`Message #${currentServer}`}
-                />
-              </div>
-            </div>
-          </>
-        )}
+          ))}
+        </div>
 
-        {activeView === 'friends' && (
-          <div className="flex-1 p-6 space-y-6">
-            <h2 className="text-xl font-bold text-white">Friends</h2>
-            <div className="flex gap-2">
-              <input value={friendInput} onChange={e=>setFriendInput(e.target.value)} placeholder="Friend ID..." className="flex-1 bg-[#1e1f22] p-2 rounded outline-none border border-white/5" />
-              <button onClick={addFriend} className="bg-[#5865f2] px-4 rounded font-bold text-white">Add</button>
-            </div>
-            <div className="space-y-2">
-              {friends.map(f => (
-                <div key={f.id} className="p-3 bg-[#2b2d31] rounded-lg flex items-center justify-between border border-white/5">
-                  <span className="font-bold">{f.username}</span>
-                  <MessageCircle size={18} className="text-[#b5bac1]" />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeView === 'servers' && (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-[#313338] to-[#1e1f22]">
-            <div className="max-w-md w-full space-y-6">
-              <Globe size={64} className="text-[#23a559] mx-auto" />
-              <h2 className="text-2xl font-black text-white">Join or Create Community</h2>
-              <div className="bg-[#1e1f22] p-1 rounded-2xl flex border border-white/5">
-                <input value={serverJoinInput} onChange={e=>setServerJoinInput(e.target.value)} placeholder="Server Name..." className="flex-1 bg-transparent p-4 outline-none text-white" />
-                <button onClick={createOrJoinServer} className="bg-[#23a559] px-6 rounded-xl font-bold text-white">Join</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeView === 'settings' && (
-          <div className="flex-1 p-8 max-w-2xl mx-auto w-full">
-            <h2 className="text-2xl font-bold mb-8 text-white">User Settings</h2>
-            <div className="space-y-4">
-              <div className="bg-[#2b2d31] p-6 rounded-2xl border border-white/5">
-                <p className="text-sm font-bold text-[#949ba4] uppercase mb-4 tracking-widest">My Account</p>
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-xs text-[#b5bac1]">Username</p>
-                    <p className="text-white font-bold">{profile?.username}</p>
-                  </div>
-                  <button className="bg-[#4e5058] px-4 py-1.5 rounded text-sm text-white font-medium hover:bg-[#6d6f78]">Edit</button>
+        {/* Chat Input / Timeout UI */}
+        <div className="px-4 pb-6 pt-2">
+          {activeTimeout ? (
+            <div className="bg-[#2b2d31] rounded-lg p-4 border border-yellow-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-3 text-yellow-500">
+                <Clock size={20} />
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold">You are in timeout</span>
+                  <span className="text-[10px] opacity-70">You cannot send messages until your restriction expires.</span>
                 </div>
               </div>
-
-              {isAdmin && (
-                <div className="bg-indigo-500/10 p-6 rounded-2xl border border-indigo-500/20">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <ShieldCheck className="text-indigo-400" />
-                      <div>
-                        <p className="text-white font-bold">Admin Perspective</p>
-                        <p className="text-xs text-indigo-300/60 font-medium">View all user-created channels and activity</p>
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => setShowAdminView(!showAdminView)}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${showAdminView ? 'bg-indigo-500 text-white' : 'bg-white/5 text-indigo-400 border border-indigo-500/30'}`}
-                    >
-                      {showAdminView ? 'Hide Secrets' : 'Show All Channels'}
-                    </button>
-                  </div>
-
-                  {showAdminView && (
-                    <div className="mt-6 space-y-2 border-t border-indigo-500/20 pt-4">
-                      <p className="text-[10px] font-bold text-indigo-300 uppercase mb-2">Omniscient Registry</p>
-                      {allPublicServers.map(s => (
-                        <div 
-                          key={s.id} 
-                          onClick={() => { setCurrentServer(s.name); setActiveView('chat'); }}
-                          className="flex items-center justify-between p-2 rounded hover:bg-white/5 cursor-pointer text-sm"
-                        >
-                          <div className="flex items-center space-x-2">
-                            {s.isPrivate ? <Lock size={12} className="text-amber-400" /> : <Eye size={12} className="text-indigo-400" />}
-                            <span className="text-slate-300">{s.name}</span>
-                          </div>
-                          <span className="text-[10px] text-slate-500">ID: {s.id.slice(0, 6)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+              <div className="text-yellow-500 font-mono text-sm font-bold bg-yellow-500/10 px-3 py-1 rounded">
+                {Math.max(0, Math.ceil((activeTimeout - Date.now()) / 1000))}s
+              </div>
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center space-x-4">
+              <Plus size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
+              <input 
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                className="flex-1 bg-transparent outline-none text-[#dbdee1] placeholder-[#6d6f78]"
+                placeholder="Message #general"
+              />
+              <Smile size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 };
 
 export default App;
-
 
