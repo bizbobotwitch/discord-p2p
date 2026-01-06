@@ -1,210 +1,391 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, query } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, addDoc, serverTimestamp, setDoc, getDoc, query, orderBy } from 'firebase/firestore';
 import { 
-  Hash, Settings, Mic, MicOff, Video, VideoOff, Phone, Send, Plus, 
-  Compass, User, Check, Link as LinkIcon, Github, Smile, Gift, 
-  Sticker, Search, ShieldAlert, Clock
+  Hash, Settings, Send, Plus, Search, ShieldAlert, Users, 
+  MessageCircle, Globe, Sparkles, AtSign, ShieldCheck, 
+  Eye, Lock, Bell, Inbox, HelpCircle, ChevronRight,
+  Monitor, Zap, Activity, Cpu, Layers, Radio, Terminal
 } from 'lucide-react';
 
+// --- Configuration ---
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = "discord-clone-v2";
+const appId = "nexus-engine-v3";
 
+// --- Main Application ---
 const App = () => {
-  // --- Auth & Safety State ---
+  const [view, setView] = useState('landing'); // 'landing', 'chat', 'settings', 'explore'
   const [user, setUser] = useState(null);
-  const [isBanned, setIsBanned] = useState(false);
-  const [activeTimeout, setActiveTimeout] = useState(null);
-
-  // --- UI State ---
-  const [activeChannel, setActiveChannel] = useState('general');
+  const [profile, setProfile] = useState(null);
+  const [currentServer, setCurrentServer] = useState('Global Nexus');
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [isCalling, setIsCalling] = useState(false);
-  const [isMicOn, setIsMicOn] = useState(true);
-  const [isVideoOn, setIsVideoOn] = useState(false);
-  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [joinedServers, setJoinedServers] = useState(['Global Nexus']);
+  const [allServers, setAllServers] = useState([]);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const messagesEndRef = useRef(null);
 
-  // --- Firebase Auth & Safety Guard ---
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.tailwindcss.com';
+    document.head.appendChild(script);
+    document.body.style.backgroundColor = '#09090b';
+    document.body.style.margin = '0';
+  }, []);
+
+  // --- Auth Logic ---
   useEffect(() => {
     const initAuth = async () => {
       await signInAnonymously(auth);
     };
     initAuth();
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    return onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUser(u);
+        const profRef = doc(db, 'artifacts', appId, 'users', u.uid, 'profile', 'data');
+        const snap = await getDoc(profRef);
+        if (!snap.exists()) {
+          const newProf = { uid: u.uid, username: `Agent-${u.uid.slice(0, 4)}`, isAdmin: true };
+          await setDoc(profRef, newProf);
+          setProfile(newProf);
+        } else {
+          setProfile(snap.data());
+        }
+      }
+    });
   }, []);
 
+  // --- Real-time Data ---
   useEffect(() => {
     if (!user) return;
 
-    // Listen for Bans
-    const banRef = doc(db, 'artifacts', appId, 'public', 'data', 'bans', user.uid);
-    const unsubBans = onSnapshot(banRef, (doc) => {
-      setIsBanned(doc.exists());
+    // Registry for Admin visibility
+    const registryRef = collection(db, 'artifacts', appId, 'public', 'registry');
+    const unsubRegistry = onSnapshot(registryRef, (snap) => {
+      setAllServers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    // Listen for Timeouts
-    const timeoutRef = doc(db, 'artifacts', appId, 'public', 'data', 'timeouts', user.uid);
-    const unsubTimeouts = onSnapshot(timeoutRef, (doc) => {
-      if (doc.exists()) {
-        const data = doc.data();
-        if (data.expiresAt > Date.now()) {
-          setActiveTimeout(data.expiresAt);
-        } else {
-          setActiveTimeout(null);
-        }
-      } else {
-        setActiveTimeout(null);
-      }
-    });
-
-    // Listen for Global Messages
-    const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-    const unsubMsgs = onSnapshot(msgCol, (snap) => {
+    // Messages for current channel
+    const safeId = currentServer.replace(/\s+/g, '-').toLowerCase();
+    const msgRef = collection(db, 'artifacts', appId, 'public', 'data', `ch-${safeId}`);
+    const unsubMsgs = onSnapshot(msgRef, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setMessages(data.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
+      setMessages(data.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
     });
 
-    return () => { unsubBans(); unsubTimeouts(); unsubMsgs(); };
-  }, [user]);
+    return () => { unsubRegistry(); unsubMsgs(); };
+  }, [user, currentServer]);
 
-  // Check timeout expiration every second
   useEffect(() => {
-    if (!activeTimeout) return;
-    const interval = setInterval(() => {
-      if (Date.now() >= activeTimeout) setActiveTimeout(null);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [activeTimeout]);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  const sendMessage = async () => {
-    if (!inputText.trim() || !user || activeTimeout || isBanned) return;
-    
-    try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
-        content: inputText,
-        user: `User-${user.uid.slice(0, 4)}`,
-        userId: user.uid,
-        timestamp: serverTimestamp()
-      });
-      setInputText('');
-    } catch (err) {
-      console.error("Failed to send:", err);
-    }
+  const handleSendMessage = async () => {
+    if (!inputText.trim()) return;
+    const safeId = currentServer.replace(/\s+/g, '-').toLowerCase();
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `ch-${safeId}`), {
+      text: inputText,
+      sender: profile?.username,
+      senderId: user.uid,
+      timestamp: serverTimestamp(),
+      color: `hsl(${(user.uid.charCodeAt(0) * 10) % 360}, 70%, 60%)`
+    });
+    setInputText('');
   };
 
-  if (isBanned) {
+  const createServer = async (name) => {
+    if (!name.trim()) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'registry', name.toLowerCase()), {
+      name,
+      owner: user.uid,
+      createdAt: Date.now()
+    });
+    setJoinedServers(prev => [...new Set([...prev, name])]);
+    setCurrentServer(name);
+    setView('chat');
+  };
+
+  // --- UI Components ---
+
+  if (view === 'landing') {
     return (
-      <div className="h-screen w-full bg-[#1e1f22] flex items-center justify-center p-6 text-center">
-        <div className="max-w-md">
-          <ShieldAlert size={64} className="text-red-500 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold text-white mb-2">Access Denied</h1>
-          <p className="text-[#949ba4]">Your account has been permanently banned from this server for violating community guidelines.</p>
-        </div>
+      <div className="h-screen w-full bg-[#09090b] text-white flex flex-col overflow-hidden font-sans">
+        <nav className="p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
+          <div className="flex items-center gap-2">
+            <div className="bg-indigo-600 p-2 rounded-xl">
+              <Zap size={24} fill="white" />
+            </div>
+            <span className="text-xl font-black tracking-tighter uppercase italic">Nexus</span>
+          </div>
+          <div className="hidden md:flex gap-8 text-sm font-bold text-zinc-400 uppercase tracking-widest">
+            <a href="#" className="hover:text-white transition-colors">Architecture</a>
+            <a href="#" className="hover:text-white transition-colors">Protocol</a>
+            <a href="#" className="hover:text-white transition-colors">Security</a>
+          </div>
+          <button 
+            onClick={() => setView('chat')}
+            className="bg-white text-black px-6 py-2.5 rounded-full font-black text-xs uppercase hover:bg-zinc-200 transition-all active:scale-95"
+          >
+            Launch Engine
+          </button>
+        </nav>
+
+        <main className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-8 relative">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-indigo-600/20 blur-[120px] rounded-full -z-10" />
+          
+          <div className="space-y-4">
+            <div className="inline-block px-4 py-1.5 bg-zinc-900 border border-zinc-800 rounded-full text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em] mb-4">
+              Next Generation Social Engine
+            </div>
+            <h1 className="text-6xl md:text-8xl font-black tracking-tighter leading-[0.9]">
+              COMMUNICATE <br />
+              <span className="text-zinc-600 italic">WITHOUT LIMITS.</span>
+            </h1>
+            <p className="max-w-xl mx-auto text-zinc-400 font-medium text-lg leading-relaxed">
+              The only platform designed for speed, privacy, and absolute developer control. Build your space in seconds.
+            </p>
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={() => setView('chat')}
+              className="bg-indigo-600 px-10 py-5 rounded-2xl font-black text-lg shadow-2xl shadow-indigo-600/20 hover:bg-indigo-500 transition-all flex items-center gap-3"
+            >
+              Start Chatting <ChevronRight size={20} />
+            </button>
+            <button className="bg-zinc-900 px-10 py-5 rounded-2xl font-black text-lg border border-zinc-800 hover:bg-zinc-800 transition-all">
+              Documentation
+            </button>
+          </div>
+
+          <div className="pt-20 grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl w-full">
+            <div className="bg-zinc-900/50 p-8 rounded-3xl border border-zinc-800 text-left space-y-3">
+              <Radio className="text-indigo-500" />
+              <h3 className="font-bold text-xl">Real-time Core</h3>
+              <p className="text-sm text-zinc-500">Sub-millisecond latency for global message distribution.</p>
+            </div>
+            <div className="bg-zinc-900/50 p-8 rounded-3xl border border-zinc-800 text-left space-y-3">
+              <ShieldCheck className="text-emerald-500" />
+              <h3 className="font-bold text-xl">Nexus Shield</h3>
+              <p className="text-sm text-zinc-500">Advanced moderation tools built into the platform DNA.</p>
+            </div>
+            <div className="bg-zinc-900/50 p-8 rounded-3xl border border-zinc-800 text-left space-y-3">
+              <Layers className="text-amber-500" />
+              <h3 className="font-bold text-xl">Modular Grid</h3>
+              <p className="text-sm text-zinc-500">Create infinite servers and channels on the fly.</p>
+            </div>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen w-full bg-[#313338] text-[#dbdee1] font-sans overflow-hidden antialiased">
-      {/* Sidebar: Servers */}
-      <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-2 flex-shrink-0">
-        <div className="w-12 h-12 bg-[#5865f2] rounded-[16px] flex items-center justify-center text-white cursor-pointer hover:rounded-[12px] transition-all">
-          <Github size={28} />
+    <div className="h-screen w-full bg-[#09090b] text-[#a1a1aa] flex overflow-hidden font-sans select-none antialiased">
+      
+      {/* RAIL: LEFT SERVER COLUMN */}
+      <div className="w-[72px] bg-[#000] flex flex-col items-center py-4 space-y-3 border-r border-zinc-900 flex-shrink-0">
+        <div 
+          onClick={() => setView('chat')}
+          className="w-12 h-12 bg-indigo-600 text-white rounded-[16px] flex items-center justify-center cursor-pointer hover:rounded-[12px] transition-all"
+        >
+          <Zap size={24} fill="white" />
         </div>
-        <div className="w-8 h-[2px] bg-[#35363c] rounded-full mx-auto" />
-        <div className="w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-[#23a559] hover:bg-[#23a559] hover:text-white hover:rounded-[16px] transition-all cursor-pointer">
+        
+        <div className="w-8 h-[1px] bg-zinc-800 my-1" />
+
+        {joinedServers.map(s => (
+          <div 
+            key={s} 
+            onClick={() => { setCurrentServer(s); setView('chat'); }}
+            className={`w-12 h-12 flex items-center justify-center font-black text-xs cursor-pointer transition-all relative group ${
+              currentServer === s ? 'bg-indigo-600 text-white rounded-[12px]' : 'bg-zinc-900 text-zinc-400 hover:bg-indigo-600 hover:text-white rounded-[24px] hover:rounded-[12px]'
+            }`}
+          >
+            {s.slice(0, 2).toUpperCase()}
+            {currentServer === s && <div className="absolute -left-4 w-1 h-8 bg-white rounded-r-full" />}
+          </div>
+        ))}
+
+        <div 
+          onClick={() => setView('explore')}
+          className="w-12 h-12 bg-zinc-900 text-emerald-500 flex items-center justify-center cursor-pointer hover:bg-emerald-600 hover:text-white rounded-[24px] hover:rounded-[12px] transition-all"
+        >
           <Plus size={24} />
         </div>
       </div>
 
-      {/* Sidebar: Channels */}
-      <div className="w-60 bg-[#2b2d31] flex flex-col flex-shrink-0 border-r border-black/20">
-        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm">
-          Community Chat
-        </div>
-        <div className="flex-1 overflow-y-auto py-4 px-2">
-          <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Text Channels</div>
-          <div className="bg-[#3f4147] text-white flex items-center px-2 py-1.5 rounded-md cursor-pointer">
-            <Hash size={20} className="mr-1.5 opacity-50" />
-            <span className="font-medium text-[15px]">general</span>
-          </div>
+      {/* DRAWER: CHANNELS */}
+      <div className="w-64 bg-[#09090b] flex flex-col border-r border-zinc-900">
+        <div className="h-14 px-4 flex items-center font-black text-white border-b border-zinc-900 uppercase tracking-tighter text-sm">
+          {currentServer}
         </div>
         
-        {/* User Footer */}
-        <div className="bg-[#232428] p-2 flex items-center space-x-2">
-          <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-[10px] font-bold">
-            {user ? user.uid.slice(0, 2).toUpperCase() : '??'}
+        <div className="flex-1 p-3 space-y-1">
+          <div className="text-[10px] font-black text-zinc-600 uppercase tracking-widest p-2">Voice & Data</div>
+          <div className="flex items-center gap-2 p-2 bg-zinc-900 text-white rounded-lg cursor-pointer">
+            <Hash size={18} className="text-zinc-500" />
+            <span className="font-bold text-sm">central-hub</span>
+          </div>
+          <div className="flex items-center gap-2 p-2 hover:bg-zinc-900/50 rounded-lg cursor-pointer transition-colors group">
+            <Hash size={18} className="text-zinc-700" />
+            <span className="font-bold text-sm group-hover:text-zinc-300">system-alerts</span>
+          </div>
+        </div>
+
+        <div className="p-3 bg-zinc-900/30 border-t border-zinc-900 flex items-center gap-3">
+          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center font-black text-white text-xs">
+            {profile?.username?.[0]}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-white text-xs font-bold truncate">User-{user?.uid.slice(0,4)}</div>
-            <div className="text-[#949ba4] text-[10px] truncate">Online</div>
+            <div className="text-sm font-black text-white truncate">{profile?.username}</div>
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Master Admin</div>
           </div>
-          <Settings size={16} className="text-[#b5bac1] cursor-pointer" />
+          <Settings 
+            size={18} 
+            className="cursor-pointer hover:text-white transition-colors" 
+            onClick={() => setView('settings')}
+          />
         </div>
       </div>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-[#313338] min-w-0">
-        <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] shadow-sm">
-          <Hash size={24} className="text-[#80848e] mr-2" />
-          <span className="font-bold text-white uppercase tracking-wide text-sm">general</span>
-        </div>
+      {/* CHAT AREA */}
+      <div className="flex-1 flex flex-col bg-[#0c0c0e] relative">
+        {view === 'chat' && (
+          <>
+            <div className="h-14 px-6 flex items-center justify-between border-b border-zinc-900 bg-[#0c0c0e]/80 backdrop-blur-md sticky top-0 z-10">
+              <div className="flex items-center gap-2">
+                <Hash size={20} className="text-zinc-500" />
+                <span className="font-black text-white text-sm">central-hub</span>
+              </div>
+              <div className="flex gap-4 text-zinc-500">
+                <Bell size={20} className="hover:text-white cursor-pointer" />
+                <Inbox size={20} className="hover:text-white cursor-pointer" />
+                <HelpCircle size={20} className="hover:text-white cursor-pointer" />
+              </div>
+            </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col-reverse space-y-reverse space-y-4">
-          {messages.map((msg) => (
-            <div key={msg.id} className="flex items-start space-x-4 group px-2 py-1 hover:bg-[#2e3035] rounded-lg transition-colors">
-              <div className="w-10 h-10 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold">
-                {msg.user[0]}
-              </div>
-              <div>
-                <div className="flex items-baseline space-x-2">
-                  <span className="font-bold text-white">{msg.user}</span>
-                  <span className="text-[#949ba4] text-[10px]">
-                    {msg.timestamp?.seconds ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString() : 'Sending...'}
-                  </span>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col no-scrollbar">
+              <div className="mt-auto" />
+              {messages.map((m) => (
+                <div key={m.id} className="flex gap-4 group">
+                  <div className="w-11 h-11 rounded-2xl flex-shrink-0 flex items-center justify-center font-black text-white shadow-lg" style={{ backgroundColor: m.color || '#4f46e5' }}>
+                    {m.sender?.[0]}
+                  </div>
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-white text-[15px]">{m.sender}</span>
+                      <span className="text-[10px] font-bold text-zinc-600 uppercase">
+                        {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : 'Syncing...'}
+                      </span>
+                    </div>
+                    <p className="text-[#d4d4d8] leading-relaxed text-[15px] whitespace-pre-wrap">{m.text}</p>
+                  </div>
                 </div>
-                <div className="text-[#dbdee1] leading-relaxed">{msg.content}</div>
-              </div>
+              ))}
+              <div ref={messagesEndRef} />
             </div>
-          ))}
-        </div>
 
-        {/* Chat Input / Timeout UI */}
-        <div className="px-4 pb-6 pt-2">
-          {activeTimeout ? (
-            <div className="bg-[#2b2d31] rounded-lg p-4 border border-yellow-500/30 flex items-center justify-between">
-              <div className="flex items-center gap-3 text-yellow-500">
-                <Clock size={20} />
-                <div className="flex flex-col">
-                  <span className="text-sm font-bold">You are in timeout</span>
-                  <span className="text-[10px] opacity-70">You cannot send messages until your restriction expires.</span>
+            <div className="p-6">
+              <div className="bg-zinc-900/50 border border-zinc-800 p-1.5 rounded-2xl flex items-center gap-2 shadow-2xl focus-within:ring-2 ring-indigo-600/50 transition-all">
+                <div className="p-3 bg-zinc-800 text-zinc-400 rounded-xl cursor-pointer hover:bg-zinc-700 hover:text-white">
+                  <Plus size={20} />
+                </div>
+                <input 
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  className="flex-1 bg-transparent border-none outline-none text-white font-medium text-sm px-2 py-3"
+                  placeholder={`Broadcast to #${currentServer}...`}
+                />
+                <button 
+                  onClick={handleSendMessage}
+                  className={`p-3 rounded-xl transition-all ${inputText.trim() ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' : 'text-zinc-600'}`}
+                >
+                  <Send size={20} />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {view === 'explore' && (
+          <div className="p-12 max-w-4xl mx-auto w-full space-y-12 overflow-y-auto no-scrollbar">
+            <div className="space-y-4">
+              <h2 className="text-4xl font-black text-white tracking-tighter">Nexus Registry</h2>
+              <p className="text-zinc-500 font-medium italic">Monitor global activities and create new communication units.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-[32px] space-y-4 shadow-xl">
+                <h3 className="font-black text-white uppercase text-xs tracking-widest text-indigo-400">Initialize Unit</h3>
+                <input 
+                  className="w-full bg-black border border-zinc-800 rounded-2xl p-4 text-white font-bold outline-none focus:ring-2 ring-indigo-600"
+                  placeholder="Unit Codename..."
+                  onKeyDown={(e) => e.key === 'Enter' && createServer(e.target.value)}
+                />
+                <button className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-white text-sm uppercase">Generate Server</button>
+              </div>
+              <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-[32px] flex flex-col items-center justify-center text-center space-y-2 opacity-50 grayscale">
+                <Globe size={48} className="text-zinc-700" />
+                <span className="font-black text-zinc-600 text-xs uppercase tracking-widest">Global Discovery Coming Soon</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'settings' && (
+          <div className="p-12 max-w-4xl mx-auto w-full space-y-12 overflow-y-auto no-scrollbar">
+            <h2 className="text-4xl font-black text-white tracking-tighter">System Console</h2>
+            
+            {profile?.isAdmin && (
+              <div className="bg-indigo-600/5 border border-indigo-600/20 p-8 rounded-[40px] space-y-8 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
+                  <Terminal size={140} />
+                </div>
+                
+                <div className="space-y-4 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-indigo-600 rounded-2xl text-white">
+                      <Monitor size={32} />
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-black text-white">Master Oversight</h3>
+                      <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">All current nodes in the Nexus</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3">
+                    {allServers.map(s => (
+                      <div key={s.id} className="bg-black/40 border border-white/5 p-4 rounded-2xl flex justify-between items-center group/item hover:bg-black/60 transition-all">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center text-[10px] font-black">{s.name[0].toUpperCase()}</div>
+                          <span className="font-bold text-zinc-300">{s.name}</span>
+                        </div>
+                        <button 
+                          onClick={() => { setCurrentServer(s.name); setView('chat'); }}
+                          className="bg-zinc-900 border border-zinc-800 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase hover:bg-indigo-600 hover:text-white transition-all"
+                        >
+                          Intercept
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-              <div className="text-yellow-500 font-mono text-sm font-bold bg-yellow-500/10 px-3 py-1 rounded">
-                {Math.max(0, Math.ceil((activeTimeout - Date.now()) / 1000))}s
-              </div>
-            </div>
-          ) : (
-            <div className="bg-[#383a40] rounded-lg px-4 py-2.5 flex items-center space-x-4">
-              <Plus size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
-              <input 
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                className="flex-1 bg-transparent outline-none text-[#dbdee1] placeholder-[#6d6f78]"
-                placeholder="Message #general"
-              />
-              <Smile size={20} className="text-[#b5bac1] cursor-pointer hover:text-white" />
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      `}} />
     </div>
   );
 };
