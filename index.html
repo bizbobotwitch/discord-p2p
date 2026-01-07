@@ -2,473 +2,355 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cloud Chat</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Discord Clone</title>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+    <!-- PeerJS for Voice Chat -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: #313338; 
-            margin: 0; 
-            color: #dbdee1; 
-            overflow: hidden;
-            touch-action: manipulation;
-        }
-        .scale-in { animation: scaleIn 0.2s ease-out; }
-        @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        
-        .drawer-transition { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-        
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #1e1f22; border-radius: 4px; }
-        
-        .chat-container { height: 100dvh; }
-
-        .voice-active-ring {
-            box-shadow: 0 0 0 2px #23a559;
-            animation: pulse-green 2s infinite;
-        }
-        @keyframes pulse-green {
-            0% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(35, 165, 89, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(35, 165, 89, 0); }
-        }
+        body { margin:0; font-family:'Whitney','Helvetica Neue',Helvetica,Arial,sans-serif; background:#36393f; color:#dcddde; display:flex; height:100vh; overflow:hidden; }
+        #login-screen { position:fixed; inset:0; background:#36393f; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:100; }
+        #login-screen input, #login-screen button { padding:12px; width:300px; margin:10px; border-radius:8px; border:none; font-size:1em; }
+        #login-screen button { background:#5865f2; color:white; cursor:pointer; }
+        #app { display:flex; width:100%; height:100%; }
+        #servers { width:72px; background:#202225; padding-top:12px; align-items:center; display:flex; flex-direction:column; overflow-y:auto; }
+        .server { width:50px; height:50px; background:#36393f; border-radius:50%; margin:8px 0; cursor:pointer; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:1.2em; overflow: hidden; transition: 0.2s; }
+        .server:hover { border-radius:16px; background:#5865f2; }
+        .server.active { border-radius:16px; background:#5865f2; }
+        .add-server { background:#36393f; color:#43b581; font-size: 2em; }
+        #sidebar { width:240px; background:#2f3136; display:flex; flex-direction:column; }
+        #server-header { padding:16px; font-size:1.4em; font-weight:bold; border-bottom:1px solid #202225; }
+        #channels { flex:1; overflow-y:auto; }
+        .channel-cat { padding:8px 16px; text-transform:uppercase; font-size:0.8em; color:#8e9297; }
+        .channel { padding:8px 16px; cursor:pointer; border-radius:4px; margin:2px 8px; }
+        .channel:hover, .channel.active { background:#393c43; color: white; }
+        #friends-section { border-top:1px solid #202225; padding:16px; }
+        #friends-list .friend { padding:8px; display:flex; align-items:center; cursor:pointer; border-radius:4px; }
+        #friends-list .friend:hover { background:#393c43; }
+        #friends-list .friend .status { width:10px; height:10px; border-radius:50%; background:#43b581; margin-right:10px; }
+        #main { flex:1; display:flex; flex-direction:column; background:#36393f; }
+        #topbar { height:48px; background:#36393f; padding:0 16px; display:flex; align-items:center; justify-content:space-between; box-shadow:0 1px 0 rgba(4,4,5,0.2); }
+        #channel-name { font-size:1.1em; font-weight:bold; }
+        #voice-controls button { background:#43b581; margin-left:8px; padding:8px 16px; border:none; border-radius:4px; cursor:pointer; color:white; }
+        #messages { flex:1; padding:20px; overflow-y:auto; display:flex; flex-direction:column; }
+        .message { margin-bottom:16px; max-width:100%; }
+        .message .author { font-weight:bold; margin-bottom:4px; display:flex; align-items:center; }
+        .message .time { font-size:0.75em; color:#72767d; margin-left:8px; font-weight: normal; }
+        #input-area { height:70px; background:#40444b; padding:10px 20px; display:flex; align-items:center; }
+        #message-input { flex:1; background:#36393f; border:none; border-radius:8px; padding:12px; color:white; font-size:1em; }
+        #message-input:focus { outline:none; }
+        .modal { position:fixed; inset:0; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:200; }
+        .modal-content { background:#36393f; padding:20px; border-radius:8px; width:400px; }
+        .hidden { display:none !important; }
     </style>
 </head>
 <body>
-    <div id="root"></div>
 
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, setDoc, deleteDoc, query, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+<div id="login-screen">
+    <h1>My Discord Clone</h1>
+    <input type="text" id="username-input" placeholder="Choose a username" maxlength="32">
+    <button onclick="login()">Join</button>
+</div>
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyB-dwq2yjLEUSNZ0UT5oq4-u_KXghysXfw",
-            authDomain: "discord2-1ed09.firebaseapp.com",
-            projectId: "discord2-1ed09",
-            storageBucket: "discord2-1ed09.firebasestorage.app",
-            messagingSenderId: "856172729472",
-            appId: "1:856172729472:web:fa00078f5968d3e30a0265"
-        };
+<div id="app" class="hidden">
+    <div id="servers">
+        <div class="server add-server" onclick="showCreateServerModal()">+</div>
+    </div>
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+    <div id="sidebar">
+        <div id="server-header">Select a Server</div>
+        <div id="channels">
+            <div class="channel-cat">Text Channels</div>
+            <!-- Dynamic Channels -->
+        </div>
+        <div id="friends-section">
+            <div style="padding:8px 16px; text-transform:uppercase; font-size:0.8em; color:#8e9297;">Friends</div>
+            <div style="padding:0 16px;"><input type="text" id="add-friend-input" placeholder="Add friend by username" style="width:100%; padding:8px; background:#202225; border:none; border-radius:4px; color:white;"></div>
+            <div id="friends-list"></div>
+        </div>
+    </div>
 
-        window.FirebaseSDK = { 
-            auth, db, defaultAppId: "discord-clone-v2",
-            collection, addDoc, onSnapshot, serverTimestamp, 
-            signInAnonymously, onAuthStateChanged, doc, setDoc, deleteDoc, query, where, getDocs, limit
-        };
-        window.dispatchEvent(new Event('firebase-ready'));
-    </script>
+    <div id="main">
+        <div id="topbar">
+            <div id="channel-name"># welcome</div>
+            <div id="voice-controls">
+                <button id="voice-btn" onclick="toggleVoice()">🎤 Join Voice</button>
+            </div>
+        </div>
+        <div id="messages"></div>
+        <div id="input-area">
+            <input type="text" id="message-input" placeholder="Message #general" disabled>
+        </div>
+    </div>
+</div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+<!-- Modals -->
+<div id="create-server-modal" class="modal">
+    <div class="modal-content">
+        <h2>Create a Server</h2>
+        <input type="text" id="server-name-input" placeholder="Server Name" style="width: 100%; box-sizing: border-box;">
+        <div style="margin-top: 15px; display: flex; gap: 10px;">
+            <button onclick="createServer()" style="flex: 1; background: #5865f2; color: white; padding: 10px; border-radius: 4px; border: none; cursor: pointer;">Create</button>
+            <button onclick="closeModal('create-server-modal')" style="flex: 1; background: #4f545c; color: white; padding: 10px; border-radius: 4px; border: none; cursor: pointer;">Cancel</button>
+        </div>
+    </div>
+</div>
 
-        const App = () => {
-            const [fb, setFb] = useState(window.FirebaseSDK);
-            const [user, setUser] = useState(null);
-            const [username, setUsername] = useState(localStorage.getItem('chat-username') || '');
-            const [currentServerId, setCurrentServerId] = useState(localStorage.getItem('chat-server-id') || 'discord-clone-v2');
-            const [myServers, setMyServers] = useState(JSON.parse(localStorage.getItem('my-servers') || '["discord-clone-v2"]'));
-            const [isUsernameSet, setIsUsernameSet] = useState(!!localStorage.getItem('chat-username'));
+<script>
+    const firebaseConfig = JSON.parse(__firebase_config);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'discord-clone';
+    
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+
+    let currentUserData = null;
+    let currentServer = null;
+    let currentChannel = 'general';
+    let unsubscribeMessages = null;
+    let voiceStream = null;
+    const colors = ['#e91e63','#9c27b0','#673ab7','#3f51b5','#2196f3','#00bcd4','#009688','#4caf50','#cddc39','#ffeb3b','#ffc107','#ff9800','#ff5722'];
+
+    // Auth & Login
+    async function login() {
+        const username = document.getElementById('username-input').value.trim();
+        if (!username) return alert("Enter a username!");
+        
+        // Auth First (Rule 3)
+        try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await auth.signInWithCustomToken(__initial_auth_token);
+            } else {
+                await auth.signInAnonymously();
+            }
             
-            const [messages, setMessages] = useState([]);
-            const [inputText, setInputText] = useState('');
-            const [status, setStatus] = useState('Connecting...');
-            const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-            const [showServerModal, setShowServerModal] = useState(false);
-            const [newServerInput, setNewServerInput] = useState('');
+            const uid = auth.currentUser.uid;
+            currentUserData = { username, uid };
             
-            // Voice State
-            const [isVoiceConnected, setIsVoiceConnected] = useState(false);
-            const [voiceParticipants, setVoiceParticipants] = useState([]);
-            const [isMuted, setIsMuted] = useState(false);
-            const [showCallScreen, setShowCallScreen] = useState(false);
-            const localStream = useRef(null);
-            const scrollRef = useRef(null);
+            // Store user profile (Rule 1: private path)
+            await db.collection('artifacts').doc(appId).collection('users').doc(uid).set({
+                username,
+                usernameLower: username.toLowerCase(),
+                friends: [],
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
 
-            useEffect(() => {
-                const handleReady = () => setFb(window.FirebaseSDK);
-                if (!fb) window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
-            }, [fb]);
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            
+            loadServers();
+            loadFriends();
+        } catch (e) {
+            console.error(e);
+            alert("Login failed. Check console.");
+        }
+    }
 
-            useEffect(() => {
-                if (!fb) return;
-                fb.signInAnonymously(fb.auth).catch(() => setStatus('Auth Failed'));
-                return fb.onAuthStateChanged(fb.auth, (u) => {
-                    setUser(u);
-                    if (u) setStatus('Connected');
+    // Server Management
+    async function createServer() {
+        if (!auth.currentUser) return;
+        const name = document.getElementById('server-name-input').value.trim();
+        if (!name) return;
+
+        // Rule 1: Public data path
+        const serverRef = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('servers').add({
+            name,
+            owner: auth.currentUser.uid,
+            members: [auth.currentUser.uid],
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        closeModal('create-server-modal');
+        loadServers(); // Refresh list
+    }
+
+    function loadServers() {
+        if (!auth.currentUser) return;
+        
+        // Rule 2: Simple query
+        db.collection('artifacts').doc(appId).collection('public').doc('data').collection('servers')
+            .onSnapshot(snapshot => {
+                const serversDiv = document.getElementById('servers');
+                serversDiv.innerHTML = '<div class="server add-server" onclick="showCreateServerModal()">+</div>';
+                
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    // Basic filtering in memory to ensure user is a member
+                    if (data.members.includes(auth.currentUser.uid)) {
+                        const serverEl = document.createElement('div');
+                        serverEl.className = 'server' + (currentServer === doc.id ? ' active' : '');
+                        serverEl.textContent = data.name.slice(0,2).toUpperCase();
+                        serverEl.title = data.name;
+                        serverEl.onclick = (e) => switchServer(doc.id, data, e.currentTarget);
+                        serversDiv.appendChild(serverEl);
+                    }
                 });
-            }, [fb]);
+            }, err => console.error("Server Load Error:", err));
+    }
 
-            // Sync Messages for current server
-            useEffect(() => {
-                if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
-                return fb.onSnapshot(col, (snap) => {
-                    const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                    setMessages(msgs.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-                }, (err) => console.error("Firestore error:", err));
-            }, [user, fb, currentServerId]);
+    async function switchServer(serverId, data, el) {
+        currentServer = serverId;
+        document.getElementById('server-header').textContent = data.name;
+        document.querySelectorAll('.server').forEach(s => s.classList.remove('active'));
+        el.classList.add('active');
+        
+        loadChannels();
+        switchChannel('general');
+    }
 
-            // Sync Voice Participants
-            useEffect(() => {
-                if (!user || !fb || !currentServerId) return;
-                const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants');
-                return fb.onSnapshot(col, (snap) => {
-                    setVoiceParticipants(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    function loadChannels() {
+        const channelsDiv = document.getElementById('channels');
+        channelsDiv.innerHTML = `
+            <div class="channel-cat">Text Channels</div>
+            <div class="channel active" onclick="switchChannel('general')"># general</div>
+            <div class="channel" onclick="switchChannel('random')"># random</div>
+            <div class="channel" onclick="switchChannel('gaming')"># gaming</div>
+        `;
+    }
+
+    function switchChannel(channelId) {
+        currentChannel = channelId;
+        document.getElementById('channel-name').textContent = `# ${channelId}`;
+        const input = document.getElementById('message-input');
+        input.placeholder = `Message #${channelId}`;
+        input.disabled = false;
+        
+        document.querySelectorAll('.channel').forEach(c => {
+            c.classList.toggle('active', c.textContent.trim() === `# ${channelId}`);
+        });
+
+        loadMessages();
+    }
+
+    // Message Management
+    function loadMessages() {
+        if (unsubscribeMessages) unsubscribeMessages();
+        if (!currentServer) return;
+
+        const path = `artifacts/${appId}/public/data/servers/${currentServer}/channels/${currentChannel}/messages`;
+        
+        unsubscribeMessages = db.collection(path)
+            .onSnapshot(snapshot => {
+                const msgsContainer = document.getElementById('messages');
+                msgsContainer.innerHTML = '';
+                
+                let messages = [];
+                snapshot.forEach(doc => messages.push(doc.data()));
+                
+                // Sort in memory (Rule 2)
+                messages.sort((a,b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+
+                messages.forEach(data => {
+                    const div = document.createElement('div');
+                    div.className = 'message';
+                    const color = colors[Math.abs(data.uid.charCodeAt(0)) % colors.length];
+                    const time = data.timestamp ? data.timestamp.toDate().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : "...";
+                    div.innerHTML = `
+                        <div class="author" style="color:${color}">${data.username}<span class="time">${time}</span></div>
+                        <div class="content">${escapeHTML(data.text)}</div>
+                    `;
+                    msgsContainer.appendChild(div);
                 });
-            }, [user, fb, currentServerId]);
+                msgsContainer.scrollTop = msgsContainer.scrollHeight;
+            }, err => console.error("Message Load Error:", err));
+    }
 
-            useEffect(() => {
-                if (scrollRef.current) {
-                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                }
-            }, [messages]);
+    document.getElementById('message-input').addEventListener('keypress', async e => {
+        if (e.key === 'Enter') {
+            const input = document.getElementById('message-input');
+            const text = input.value.trim();
+            if (text && currentServer && auth.currentUser) {
+                const path = `artifacts/${appId}/public/data/servers/${currentServer}/channels/${currentChannel}/messages`;
+                input.value = '';
+                await db.collection(path).add({
+                    text,
+                    username: currentUserData.username,
+                    uid: auth.currentUser.uid,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                });
+            }
+        }
+    });
 
-            const saveUsername = () => {
-                if (username.trim()) {
-                    localStorage.setItem('chat-username', username.trim());
-                    setIsUsernameSet(true);
-                }
-            };
-
-            const joinServer = async (id) => {
-                const cleanId = id.trim().toLowerCase().replace(/\s+/g, '-');
-                if (!cleanId || !fb || !user) return;
-
-                if (isVoiceConnected) toggleVoice();
+    // Friends System
+    function loadFriends() {
+        if (!auth.currentUser) return;
+        
+        db.collection('artifacts').doc(appId).collection('users').doc(auth.currentUser.uid)
+            .onSnapshot(async doc => {
+                const friendsList = document.getElementById('friends-list');
+                friendsList.innerHTML = '';
+                const friends = doc.data()?.friends || [];
                 
-                // 1. Set Local State
-                setCurrentServerId(cleanId);
-                localStorage.setItem('chat-server-id', cleanId);
-                
-                // 2. Manage Sidebar List
-                if (!myServers.includes(cleanId)) {
-                    const newList = [cleanId, ...myServers].slice(0, 10);
-                    setMyServers(newList);
-                    localStorage.setItem('my-servers', JSON.stringify(newList));
-                }
-
-                // 3. ADMIN PICKUP FIX: Initialize Server in DB if it's empty
-                try {
-                    const msgCol = fb.collection(fb.db, 'artifacts', cleanId, 'public', 'data', 'messages');
-                    const q = fb.query(msgCol, fb.limit(1));
-                    const snapshot = await fb.getDocs(q);
-                    
-                    if (snapshot.empty) {
-                        // First person here! Create a system ping so the Admin Panel detects the path
-                        await fb.addDoc(msgCol, {
-                            user: 'System',
-                            userId: 'system',
-                            content: `Server initialized by ${username}`,
-                            timestamp: fb.serverTimestamp(),
-                            isSystem: true
-                        });
-                    }
-                } catch (e) {
-                    console.error("Initialization check failed:", e);
-                }
-                
-                setShowServerModal(false);
-                setNewServerInput('');
-            };
-
-            const sendMessage = async () => {
-                if (!inputText.trim() || !user || !fb) return;
-                const text = inputText.trim();
-                setInputText('');
-                try {
-                    const col = fb.collection(fb.db, 'artifacts', currentServerId, 'public', 'data', 'messages');
-                    await fb.addDoc(col, {
-                        user: username,
-                        userId: user.uid,
-                        content: text,
-                        timestamp: fb.serverTimestamp()
-                    });
-                } catch (err) { console.error(err); }
-            };
-
-            const toggleVoice = async () => {
-                if (isVoiceConnected) {
-                    if (localStream.current) {
-                        localStream.current.getTracks().forEach(track => track.stop());
-                    }
-                    const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                    await fb.deleteDoc(participantDoc);
-                    setIsVoiceConnected(false);
-                    setShowCallScreen(false);
-                } else {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        localStream.current = stream;
-                        const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                        await fb.setDoc(participantDoc, {
-                            uid: user.uid,
-                            name: username,
-                            isMuted: false,
-                            joinedAt: Date.now()
-                        });
-                        setIsVoiceConnected(true);
-                        setIsMuted(false);
-                        setShowCallScreen(true);
-                    } catch (err) {
-                        console.error("Mic access denied", err);
+                for (let uid of friends) {
+                    const userSnap = await db.collection('artifacts').doc(appId).collection('users').doc(uid).get();
+                    if (userSnap.exists) {
+                        const friend = userSnap.data();
+                        const el = document.createElement('div');
+                        el.className = 'friend';
+                        el.innerHTML = `<div class="status"></div>${friend.username}`;
+                        friendsList.appendChild(el);
                     }
                 }
-            };
+            });
+    }
 
-            const toggleMute = () => {
-                if (localStream.current) {
-                    const newValue = !isMuted;
-                    localStream.current.getAudioTracks()[0].enabled = !newValue;
-                    setIsMuted(newValue);
-                    const participantDoc = fb.doc(fb.db, 'artifacts', currentServerId, 'public', 'data', 'voice_participants', user.uid);
-                    fb.setDoc(participantDoc, { isMuted: newValue }, { merge: true });
-                }
-            };
+    document.getElementById('add-friend-input').addEventListener('keypress', async e => {
+        if (e.key === 'Enter') {
+            const targetUsername = e.target.value.trim();
+            if (!targetUsername || !auth.currentUser) return;
 
-            if (!user) return (
-                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22]">
-                    <div className="text-center">
-                        <div className="w-12 h-12 border-4 border-[#5865f2] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                        <p className="text-sm font-medium">{status}</p>
-                    </div>
-                </div>
-            );
+            // Search by usernameLower (Rule 2: simple query)
+            const snap = await db.collection('artifacts').doc(appId).collection('users')
+                .where('usernameLower', '==', targetUsername.toLowerCase()).get();
+                
+            if (snap.empty) return alert("User not found");
+            const friendUid = snap.docs[0].id;
+            if (friendUid === auth.currentUser.uid) return alert("Can't add yourself");
 
-            if (!isUsernameSet) return (
-                <div className="flex h-screen w-full items-center justify-center bg-[#1e1f22] p-6">
-                    <div className="bg-[#313338] p-6 rounded-2xl shadow-xl w-full max-w-sm text-center scale-in border border-white/5">
-                        <div className="w-16 h-16 bg-[#5865f2] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                            <i data-lucide="smile" className="w-8 h-8 text-white"></i>
-                        </div>
-                        <h2 className="text-xl font-bold mb-2 text-white">Cloud Chat</h2>
-                        <p className="text-xs text-[#949ba4] mb-6">Pick a name to start chatting.</p>
-                        <input 
-                            value={username} 
-                            onChange={e => setUsername(e.target.value)} 
-                            placeholder="Your nickname..."
-                            className="w-full bg-[#1e1f22] p-3 rounded-xl mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2] text-center" 
-                        />
-                        <button onClick={saveUsername} className="w-full bg-[#5865f2] py-3 rounded-xl font-bold text-white active:scale-95 transition-transform">Enter App</button>
-                    </div>
-                </div>
-            );
+            // Add for both users
+            await db.collection('artifacts').doc(appId).collection('users').doc(auth.currentUser.uid).update({
+                friends: firebase.firestore.FieldValue.arrayUnion(friendUid)
+            });
+            await db.collection('artifacts').doc(appId).collection('users').doc(friendUid).update({
+                friends: firebase.firestore.FieldValue.arrayUnion(auth.currentUser.uid)
+            });
+            
+            e.target.value = '';
+        }
+    });
 
-            return (
-                <div className="flex chat-container w-full bg-[#313338] text-[#dbdee1] overflow-hidden relative">
-                    
-                    {/* Call Screen Overlay */}
-                    {showCallScreen && (
-                        <div className="fixed inset-0 bg-[#1e1f22] z-[60] flex flex-col scale-in">
-                            <div className="flex-1 flex flex-wrap items-center justify-center gap-8 p-10 overflow-y-auto">
-                                {voiceParticipants.map(p => (
-                                    <div key={p.uid} className="flex flex-col items-center">
-                                        <div className={`w-32 h-32 rounded-full bg-[#313338] border-4 border-[#1e1f22] flex items-center justify-center text-4xl font-bold text-white uppercase relative ${!p.isMuted ? 'voice-active-ring' : ''}`}>
-                                            {p.name?.[0] || '?'}
-                                            {p.isMuted && (
-                                                <div className="absolute bottom-0 right-0 bg-[#ed4245] p-2 rounded-full border-4 border-[#1e1f22]">
-                                                    <i data-lucide="mic-off" className="w-4 h-4 text-white"></i>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <span className="mt-4 font-bold text-lg text-white">{p.name} {p.uid === user.uid ? '(You)' : ''}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            
-                            <div className="h-24 bg-[#2b2d31] flex items-center justify-center space-x-6 border-t border-white/5 shadow-2xl">
-                                <button onClick={() => setShowCallScreen(false)} className="p-4 rounded-full bg-[#4e5058] hover:bg-[#6d6f78] text-white transition-all active:scale-90">
-                                    <i data-lucide="minimize-2" className="w-6 h-6"></i>
-                                </button>
-                                <button onClick={toggleMute} className={`p-4 rounded-full transition-all active:scale-90 ${isMuted ? 'bg-[#ed4245] text-white' : 'bg-[#4e5058] hover:bg-[#6d6f78] text-white'}`}>
-                                    <i data-lucide={isMuted ? "mic-off" : "mic"} className="w-6 h-6"></i>
-                                </button>
-                                <button onClick={toggleVoice} className="p-4 rounded-full bg-[#ed4245] hover:bg-[#c03537] text-white transition-all active:scale-90">
-                                    <i data-lucide="phone-off" className="w-6 h-6"></i>
-                                </button>
-                            </div>
-                        </div>
-                    )}
+    // Modals
+    function showCreateServerModal() { document.getElementById('create-server-modal').style.display = 'flex'; }
+    function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 
-                    {/* Server Modal */}
-                    {showServerModal && (
-                        <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
-                            <div className="bg-[#313338] w-full max-w-sm rounded-2xl p-6 border border-white/10 scale-in">
-                                <h3 className="text-xl font-bold text-white mb-2">Create / Join Server</h3>
-                                <p className="text-xs text-[#949ba4] mb-6">Type a server name. If it exists, you'll join it. If not, it will be created instantly.</p>
-                                <input 
-                                    value={newServerInput}
-                                    onChange={e => setNewServerInput(e.target.value)}
-                                    placeholder="e.g. secret-clubhouse"
-                                    autoFocus
-                                    className="w-full bg-[#1e1f22] p-3 rounded-xl mb-4 outline-none border border-white/10 text-white focus:border-[#5865f2]"
-                                />
-                                <div className="flex space-x-3">
-                                    <button onClick={() => setShowServerModal(false)} className="flex-1 py-3 text-sm font-bold hover:underline">Close</button>
-                                    <button 
-                                        onClick={() => joinServer(newServerInput)} 
-                                        disabled={!newServerInput.trim()}
-                                        className="flex-1 bg-[#23a559] py-3 rounded-xl font-bold text-white shadow-lg active:scale-95 transition-transform disabled:opacity-50"
-                                    >
-                                        Go
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+    // Helpers
+    function escapeHTML(str) {
+        const p = document.createElement('p');
+        p.textContent = str;
+        return p.innerHTML;
+    }
 
-                    {isDrawerOpen && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setIsDrawerOpen(false)}></div>}
-
-                    {/* Sidebar */}
-                    <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#2b2d31] flex drawer-transition transform lg:relative lg:translate-x-0 lg:z-0 ${isDrawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}>
-                        {/* Server Icons Sidebar */}
-                        <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 space-y-3 flex-shrink-0 custom-scrollbar overflow-y-auto">
-                            {myServers.map(srvId => (
-                                <div 
-                                    key={srvId}
-                                    onClick={() => joinServer(srvId)}
-                                    title={srvId}
-                                    className={`w-12 h-12 rounded-[24px] flex items-center justify-center cursor-pointer transition-all hover:rounded-[16px] group relative ${currentServerId === srvId ? 'bg-[#5865f2] text-white rounded-[16px]' : 'bg-[#313338] text-[#dbdee1] hover:bg-[#5865f2] hover:text-white'}`}
-                                >
-                                    {currentServerId === srvId && <div className="absolute -left-3 w-2 h-10 bg-white rounded-r-full"></div>}
-                                    <span className="font-bold text-xs uppercase">{srvId.substring(0, 2)}</span>
-                                </div>
-                            ))}
-                            <div className="w-8 h-[2px] bg-white/5 rounded-full"></div>
-                            <div 
-                                onClick={() => setShowServerModal(true)}
-                                className="w-12 h-12 rounded-[24px] bg-[#313338] text-[#23a559] flex items-center justify-center cursor-pointer transition-all hover:rounded-[16px] hover:bg-[#23a559] hover:text-white"
-                            >
-                                <i data-lucide="plus" className="w-6 h-6"></i>
-                            </div>
-                        </div>
-
-                        {/* Channel/Info List */}
-                        <div className="flex-1 flex flex-col min-w-0">
-                            <div className="h-12 px-4 flex items-center border-b border-[#1e1f22] font-bold text-white shadow-sm overflow-hidden">
-                                <span className="truncate">{currentServerId}</span>
-                            </div>
-                            
-                            <div className="flex-1 p-3 space-y-4 overflow-y-auto">
-                                <div>
-                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2 flex justify-between items-center">
-                                        <span>Text Channels</span>
-                                    </div>
-                                    <div className="bg-[#3f4147] text-white flex items-center px-3 py-2 rounded-md cursor-pointer">
-                                        <i data-lucide="hash" className="w-4 h-4 mr-2 opacity-50"></i>
-                                        <span className="font-medium text-sm">general</span>
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <div className="text-[12px] uppercase font-bold text-[#949ba4] px-2 mb-2">Voice Channels</div>
-                                    <div 
-                                        onClick={toggleVoice}
-                                        className={`flex items-center px-3 py-2 rounded-md cursor-pointer transition-colors ${isVoiceConnected ? 'bg-[#3f4147] text-white font-bold' : 'text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]'}`}
-                                    >
-                                        <i data-lucide="volume-2" className="w-4 h-4 mr-2 opacity-50"></i>
-                                        <span className="text-sm">General Voice</span>
-                                    </div>
-                                    
-                                    <div className="mt-2 ml-4 space-y-2">
-                                        {voiceParticipants.map(p => (
-                                            <div key={p.uid} className="flex items-center space-x-2">
-                                                <div className={`w-6 h-6 rounded-full bg-[#5865f2] flex items-center justify-center text-[10px] font-bold text-white uppercase ${!p.isMuted && isVoiceConnected ? 'ring-2 ring-[#23a559]' : ''}`}>
-                                                    {p.name?.[0] || '?'}
-                                                </div>
-                                                <span className="text-xs text-[#dbdee1] font-medium truncate flex-1">{p.name}</span>
-                                                {p.isMuted && <i data-lucide="mic-off" className="w-3 h-3 text-red-400"></i>}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="bg-[#232428] p-3 flex items-center space-x-3 mt-auto">
-                                <div className="w-8 h-8 bg-[#5865f2] rounded-full flex items-center justify-center font-bold text-xs uppercase">{username?.[0] || '?'}</div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-white text-xs font-bold truncate">{username}</div>
-                                    <div className="text-[10px] text-[#949ba4] font-medium">Online</div>
-                                </div>
-                                <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="p-2 hover:bg-white/5 rounded-lg">
-                                    <i data-lucide="log-out" className="w-4 h-4 text-[#b5bac1]"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Main Chat */}
-                    <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
-                        <div className="h-12 border-b border-[#1e1f22] flex items-center px-4 shadow-sm flex-shrink-0">
-                            <button onClick={() => setIsDrawerOpen(true)} className="mr-3 p-1 lg:hidden">
-                                <i data-lucide="menu" className="w-6 h-6"></i>
-                            </button>
-                            <i data-lucide="hash" className="w-5 h-5 text-[#80848e] mr-2"></i>
-                            <span className="font-bold text-white text-sm">general</span>
-                            <div className="flex-1"></div>
-                            <div className="text-[10px] font-bold text-[#b5bac1] bg-[#1e1f22] px-2 py-1 rounded-md">ID: {currentServerId}</div>
-                        </div>
-                        
-                        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {messages.length === 0 && (
-                                <div className="flex flex-col items-center justify-center h-full text-center opacity-30">
-                                    <i data-lucide="message-square" className="w-12 h-12 mb-2"></i>
-                                    <p className="text-sm font-bold tracking-wide uppercase">New Server: {currentServerId}</p>
-                                    <p className="text-xs">Tell a friend the ID above to let them in.</p>
-                                </div>
-                            )}
-                            {messages.map(m => (
-                                <div key={m.id} className={`flex items-start space-x-3 ${m.isSystem ? 'opacity-40 italic' : ''}`}>
-                                    {!m.isSystem && (
-                                        <div className="w-10 h-10 bg-[#5865f2] rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white uppercase">{m.user ? m.user[0] : '?'}</div>
-                                    )}
-                                    <div className="min-w-0">
-                                        <div className="flex items-baseline space-x-2">
-                                            <span className="font-bold text-white text-[15px]">{m.user}</span>
-                                            <span className="text-[10px] text-[#949ba4]">
-                                                {m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
-                                            </span>
-                                        </div>
-                                        <p className={`text-[15px] text-[#dbdee1] break-words ${m.isSystem ? 'text-xs' : ''}`}>{m.content}</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-
-                        <div className="px-4 pb-6 lg:pb-8 pt-2">
-                            <div className="bg-[#383a40] rounded-xl px-4 py-1 flex items-center">
-                                <input 
-                                    className="flex-1 bg-transparent outline-none text-[15px] text-[#dbdee1] placeholder-[#949ba4] py-2" 
-                                    placeholder={`Message #general in ${currentServerId}`} 
-                                    value={inputText} 
-                                    onChange={e => setInputText(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                                />
-                                <button onClick={sendMessage} className={`p-2 ml-2 ${inputText.trim() ? 'text-[#5865f2]' : 'text-[#b5bac1] opacity-50'}`}>
-                                    <i data-lucide="send" className="w-5 h-5"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-        setInterval(() => window.lucide && window.lucide.createIcons(), 500);
-    </script>
+    // Voice Chat Mock
+    async function toggleVoice() {
+        if (!voiceStream) {
+            try {
+                voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                document.getElementById('voice-btn').textContent = '🔴 Leave Voice';
+                document.getElementById('voice-btn').style.background = '#ed4245';
+            } catch (e) {
+                alert("Could not access microphone.");
+            }
+        } else {
+            voiceStream.getTracks().forEach(t => t.stop());
+            voiceStream = null;
+            document.getElementById('voice-btn').textContent = '🎤 Join Voice';
+            document.getElementById('voice-btn').style.background = '#43b581';
+        }
+    }
+</script>
 </body>
 </html>
